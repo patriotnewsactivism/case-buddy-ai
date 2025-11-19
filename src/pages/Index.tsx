@@ -1,12 +1,789 @@
-// Update this page (the content is just a fallback if you fail to update the page)
+import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { GoogleGenAI, LiveServerMessage, Modality, Type } from "@google/genai";
 
-const Index = () => {
-  return (
-    <div className="flex min-h-screen items-center justify-center bg-background">
-      <div className="text-center">
-        <h1 className="mb-4 text-4xl font-bold">Welcome to Your Blank App</h1>
-        <p className="text-xl text-muted-foreground">Start building your amazing project here!</p>
+// --- Configuration ---
+const LIVE_MODEL = 'gemini-2.0-flash-exp';
+const TEXT_MODEL = 'gemini-2.0-flash-exp';
+const API_KEY = import.meta.env.VITE_GOOGLE_API_KEY || '';
+
+// --- Types ---
+type ViewState = 'landing' | 'setup' | 'live-interview' | 'text-interview';
+
+interface CaseConfig {
+  type: string;
+  industry: string;
+  difficulty: string;
+}
+
+interface Message {
+  role: 'user' | 'model' | 'system';
+  text: string;
+  timestamp: number;
+}
+
+interface NotebookState {
+  caseTitle: string;
+  currentPhase: string;
+  keyData: string[];
+  candidateFramework: string[];
+  caseTimeline: string[];
+}
+
+interface SavedSession {
+  config: CaseConfig;
+  notebook: NotebookState;
+  date: number;
+}
+
+// --- Constants ---
+const CASE_TYPES = [
+  'Profitability', 'Market Entry', 'Mergers & Acquisitions', 'Product Launch', 
+  'Criminal Defense', 'Civil Rights Litigation', 'Civil RICO', 'Deposition Simulation', 'Trial Strategy', 'Cross-Examination'
+];
+
+const INDUSTRIES = [
+  'Technology', 'Retail', 'Healthcare', 'Energy', 'Financial Services', 
+  'Government', 'Legal Services', 'Non-Profit', 'Real Estate'
+];
+
+const DIFFICULTIES = [
+  'Beginner', 'Intermediate', 'Advanced', 'Expert / Partner Level'
+];
+
+const isLegalCase = (type: string) => {
+  return ['Criminal Defense', 'Civil Rights Litigation', 'Civil RICO', 'Deposition Simulation', 'Trial Strategy', 'Cross-Examination'].includes(type);
+};
+
+// --- Audio Utils ---
+const AudioContextClass = (window.AudioContext || (window as any).webkitAudioContext) as typeof AudioContext;
+
+function base64ToUint8Array(base64: string): Uint8Array {
+  const binaryString = atob(base64);
+  const len = binaryString.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    bytes[i] = binaryString.charCodeAt(i);
+  }
+  return bytes;
+}
+
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  let binary = '';
+  const bytes = new Uint8Array(buffer);
+  const len = bytes.byteLength;
+  for (let i = 0; i < len; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
+function float32ToInt16(float32: Float32Array): Int16Array {
+  const int16 = new Int16Array(float32.length);
+  for (let i = 0; i < float32.length; i++) {
+    const s = Math.max(-1, Math.min(1, float32[i]));
+    int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+  }
+  return int16;
+}
+
+// --- Components ---
+
+// 1. Landing Component
+const Landing = ({ onStart }: { onStart: () => void }) => (
+  <div className="flex flex-col items-center justify-center min-h-screen bg-slate-900 text-white p-6 relative overflow-hidden">
+    <div className="absolute inset-0 opacity-10 bg-[radial-gradient(#3b82f6_1px,transparent_1px)] [background-size:16px_16px]"></div>
+    
+    <div className="z-10 max-w-3xl text-center space-y-8">
+      <div className="inline-flex items-center justify-center p-3 bg-blue-500/10 rounded-2xl mb-4 ring-1 ring-blue-500/30">
+        <span className="material-symbols-rounded text-blue-400 text-4xl">gavel</span>
       </div>
+      
+      <h1 className="text-6xl font-bold tracking-tight">
+        Case<span className="text-blue-500">Buddy</span>
+      </h1>
+      
+      <p className="text-xl text-slate-400 max-w-2xl mx-auto leading-relaxed">
+        Master your high-stakes performance. Whether it's a <span className="text-white font-semibold">MBB Case Interview</span> or a <span className="text-white font-semibold">Civil RICO Trial</span>, 
+        CaseBuddy is your expert AI sparring partner.
+      </p>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-left mt-12">
+        {[
+          { icon: 'record_voice_over', title: 'Live Simulation', desc: 'Practice depositions, cross-examinations, and case interviews in real-time.' },
+          { icon: 'psychology', title: 'Expert Feedback', desc: 'Get critiqued on legal theory, questioning technique, and business frameworks.' },
+          { icon: 'balance', title: 'Business & Law', desc: 'From Profitability to Civil Rights Litigation. Infinite scenarios.' }
+        ].map((feature, i) => (
+          <div key={i} className="p-6 rounded-xl bg-slate-800/50 border border-slate-700 backdrop-blur-sm hover:border-blue-500/50 transition-colors">
+            <span className="material-symbols-rounded text-blue-400 text-3xl mb-3 block">{feature.icon}</span>
+            <h3 className="font-semibold text-lg mb-1">{feature.title}</h3>
+            <p className="text-slate-400 text-sm">{feature.desc}</p>
+          </div>
+        ))}
+      </div>
+
+      <button 
+        onClick={onStart}
+        className="mt-12 px-8 py-4 bg-blue-600 hover:bg-blue-500 text-white rounded-full font-semibold text-lg transition-all transform hover:scale-105 shadow-[0_0_40px_-10px_rgba(37,99,235,0.5)]"
+      >
+        Start Practice Session
+      </button>
+    </div>
+  </div>
+);
+
+// 2. Setup Component
+const Setup = ({ onConfigComplete, onLoadSession }: { 
+  onConfigComplete: (config: CaseConfig, mode: 'live' | 'text') => void, 
+  onLoadSession: (saved: SavedSession) => void 
+}) => {
+  const [config, setConfig] = useState<CaseConfig>({
+    type: 'Profitability',
+    industry: 'Technology',
+    difficulty: 'Intermediate'
+  });
+  const [savedSession, setSavedSession] = useState<SavedSession | null>(null);
+
+  useEffect(() => {
+    const saved = localStorage.getItem('casebuddy_session');
+    if (saved) {
+      try {
+        setSavedSession(JSON.parse(saved));
+      } catch (e) {
+        console.error("Failed to parse saved session", e);
+      }
+    }
+  }, []);
+
+  return (
+    <div className="min-h-screen bg-slate-900 text-white flex items-center justify-center p-4">
+      <div className="w-full max-w-md bg-slate-800 rounded-2xl border border-slate-700 p-8 space-y-6 shadow-2xl">
+        <h2 className="text-2xl font-bold mb-6">Session Configuration</h2>
+        
+        {savedSession && (
+          <div 
+            className="mb-6 p-4 bg-blue-500/10 border border-blue-500/30 rounded-xl flex items-center justify-between group hover:bg-blue-500/20 transition-colors cursor-pointer" 
+            onClick={() => onLoadSession(savedSession)}
+          >
+            <div className="text-sm">
+              <div className="text-blue-400 font-semibold flex items-center gap-2">
+                <span className="material-symbols-rounded text-sm">history</span>
+                Resume Last Session
+              </div>
+              <div className="text-slate-400 mt-1">{savedSession.config.type} • {new Date(savedSession.date).toLocaleDateString()}</div>
+            </div>
+            <button 
+              className="px-3 py-2 bg-blue-600 hover:bg-blue-500 text-xs font-bold rounded-lg uppercase tracking-wide transition-transform group-hover:scale-105"
+            >
+              Resume
+            </button>
+          </div>
+        )}
+
+        <div className="space-y-4">
+          <div>
+            <label className="block text-sm text-slate-400 mb-2">Case / Simulation Type</label>
+            <select 
+              value={config.type}
+              onChange={(e) => setConfig({...config, type: e.target.value})}
+              className="w-full bg-slate-900 border border-slate-700 rounded-lg p-3 text-white focus:ring-2 focus:ring-blue-500 outline-none"
+            >
+              {CASE_TYPES.map(o => <option key={o} value={o}>{o}</option>)}
+            </select>
+          </div>
+
+          <div>
+            <label className="block text-sm text-slate-400 mb-2">Industry / Sector</label>
+            <select 
+              value={config.industry}
+              onChange={(e) => setConfig({...config, industry: e.target.value})}
+              className="w-full bg-slate-900 border border-slate-700 rounded-lg p-3 text-white focus:ring-2 focus:ring-blue-500 outline-none"
+            >
+              {INDUSTRIES.map(o => <option key={o} value={o}>{o}</option>)}
+            </select>
+          </div>
+
+          <div>
+            <label className="block text-sm text-slate-400 mb-2">Difficulty Level</label>
+            <select 
+              value={config.difficulty}
+              onChange={(e) => setConfig({...config, difficulty: e.target.value})}
+              className="w-full bg-slate-900 border border-slate-700 rounded-lg p-3 text-white focus:ring-2 focus:ring-blue-500 outline-none"
+            >
+              {DIFFICULTIES.map(o => <option key={o} value={o}>{o}</option>)}
+            </select>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-4 pt-4">
+          <button 
+            onClick={() => onConfigComplete(config, 'text')}
+            className="flex items-center justify-center gap-2 py-3 rounded-xl bg-slate-700 hover:bg-slate-600 transition-colors font-medium"
+          >
+            <span className="material-symbols-rounded">chat</span>
+            Text Strategy
+          </button>
+          <button 
+            onClick={() => {
+              if (!API_KEY) {
+                alert('Please add your Google API Key in environment variables (VITE_GOOGLE_API_KEY)');
+                return;
+              }
+              onConfigComplete(config, 'live');
+            }}
+            className="flex items-center justify-center gap-2 py-3 rounded-xl bg-blue-600 hover:bg-blue-500 transition-colors font-medium"
+          >
+            <span className="material-symbols-rounded">mic</span>
+            Live Simulation
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// 3. Live Interface
+const LiveSession = ({ config, initialNotebook, onEnd }: { 
+  config: CaseConfig, 
+  initialNotebook?: NotebookState, 
+  onEnd: () => void 
+}) => {
+  const [status, setStatus] = useState<'connecting' | 'connected' | 'error'>('connecting');
+  const [volume, setVolume] = useState(0);
+  const [isMuted, setIsMuted] = useState(false);
+  const [inputGain, setInputGain] = useState(1.0);
+  const [notebook, setNotebook] = useState<NotebookState>(initialNotebook || {
+    caseTitle: "Initializing...",
+    currentPhase: "Setup",
+    keyData: [],
+    candidateFramework: [],
+    caseTimeline: []
+  });
+
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [isTranscriptionEnabled, setIsTranscriptionEnabled] = useState(false);
+  const [transcript, setTranscript] = useState<{sender: 'You' | 'AI', text: string}[]>([]);
+  const [currentInputTrans, setCurrentInputTrans] = useState("");
+  const [currentOutputTrans, setCurrentOutputTrans] = useState("");
+  
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const nextStartTimeRef = useRef<number>(0);
+  const sourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
+  const sessionRef = useRef<any>(null); 
+  const inputGainRef = useRef(1.0);
+  const mounted = useRef(true);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const timelineScrollRef = useRef<HTMLDivElement>(null);
+
+  const isLegal = isLegalCase(config.type);
+
+  useEffect(() => {
+    inputGainRef.current = inputGain;
+  }, [inputGain]);
+
+  useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [transcript, currentInputTrans, currentOutputTrans, isTranscriptionEnabled]);
+
+  useEffect(() => {
+    if (timelineScrollRef.current) {
+      timelineScrollRef.current.scrollTop = timelineScrollRef.current.scrollHeight;
+    }
+  }, [notebook.caseTimeline]);
+
+  const showToast = (msg: string) => {
+    setToastMessage(msg);
+    setTimeout(() => setToastMessage(null), 3000);
+  };
+
+  const saveSession = () => {
+    const sessionData: SavedSession = {
+      config,
+      notebook,
+      date: Date.now()
+    };
+    localStorage.setItem('casebuddy_session', JSON.stringify(sessionData));
+    showToast("Session Saved Successfully");
+  };
+
+  useEffect(() => {
+    mounted.current = true;
+    
+    const init = async () => {
+      try {
+        if (!API_KEY) {
+          setStatus('error');
+          return;
+        }
+
+        const ai = new GoogleGenAI({ apiKey: API_KEY });
+        
+        const ac = new AudioContextClass({ sampleRate: 24000 });
+        audioContextRef.current = ac;
+        const inputAc = new AudioContextClass({ sampleRate: 16000 });
+        
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const source = inputAc.createMediaStreamSource(stream);
+        const processor = inputAc.createScriptProcessor(4096, 1, 1);
+        
+        processor.onaudioprocess = (e) => {
+          if (isMuted || !sessionRef.current) return;
+          
+          const inputData = e.inputBuffer.getChannelData(0);
+          const gain = inputGainRef.current;
+          
+          for (let i = 0; i < inputData.length; i++) {
+            inputData[i] *= gain;
+          }
+          
+          let sum = 0;
+          for(let i=0; i<inputData.length; i++) sum += inputData[i] * inputData[i];
+          const rms = Math.sqrt(sum / inputData.length);
+          setVolume(Math.min(rms * 10, 1));
+
+          const pcm16 = float32ToInt16(inputData);
+          const arrayBuffer = new ArrayBuffer(pcm16.byteLength);
+          new Uint8Array(arrayBuffer).set(new Uint8Array(pcm16.buffer));
+          const base64 = arrayBufferToBase64(arrayBuffer);
+          
+          sessionRef.current.sendRealtimeInput({
+            media: {
+              mimeType: "audio/pcm;rate=16000",
+              data: base64
+            }
+          });
+        };
+        
+        source.connect(processor);
+        processor.connect(inputAc.destination);
+
+        const updateNotebookTool = {
+          name: "updateNotebook",
+          parameters: {
+            type: Type.OBJECT,
+            properties: {
+              caseTitle: { type: Type.STRING },
+              currentPhase: { type: Type.STRING },
+              keyData: { type: Type.ARRAY, items: { type: Type.STRING } },
+              candidateFramework: { type: Type.ARRAY, items: { type: Type.STRING } },
+              newTimelineEvent: { type: Type.STRING }
+            }
+          }
+        };
+
+        let systemInstruction = isLegal 
+          ? `You are an elite Senior Litigation Partner conducting a ${config.difficulty} level ${config.type} simulation in ${config.industry}. Guide the user through proper legal procedure, questioning technique, and case strategy. Use the updateNotebook tool to track progress.`
+          : `You are an expert McKinsey/BCG Case Interviewer conducting a ${config.difficulty} level ${config.type} case in ${config.industry}. Guide the candidate through structured problem-solving. Use the updateNotebook tool to track their framework and analysis.`;
+
+        const sessionPromise = ai.live.connect({
+          model: LIVE_MODEL,
+          config: {
+            responseModalities: [Modality.AUDIO],
+            systemInstruction,
+            tools: [{ functionDeclarations: [updateNotebookTool] }],
+          },
+          callbacks: {
+            onopen: () => {
+              setStatus('connected');
+            },
+            onmessage: async (msg: LiveServerMessage) => {
+              const audioData = msg.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
+              if (audioData && audioContextRef.current) {
+                const ctx = audioContextRef.current;
+                const uint8 = base64ToUint8Array(audioData);
+                
+                const int16 = new Int16Array(uint8.buffer.slice(0));
+                const float32 = new Float32Array(int16.length);
+                for(let i=0; i<int16.length; i++) float32[i] = int16[i] / 32768.0;
+                
+                const buf = ctx.createBuffer(1, float32.length, 24000);
+                buf.copyToChannel(float32, 0);
+
+                const src = ctx.createBufferSource();
+                src.buffer = buf;
+                src.connect(ctx.destination);
+                
+                const now = ctx.currentTime;
+                const start = Math.max(now, nextStartTimeRef.current);
+                src.start(start);
+                nextStartTimeRef.current = start + buf.duration;
+                
+                sourcesRef.current.add(src);
+                src.onended = () => sourcesRef.current.delete(src);
+              }
+
+              if (msg.toolCall) {
+                for (const fc of msg.toolCall.functionCalls) {
+                  if (fc.name === 'updateNotebook') {
+                    const args = fc.args as any;
+                    setNotebook(prev => {
+                      const next = { ...prev, ...args };
+                      if (args.newTimelineEvent) {
+                        next.caseTimeline = [...(prev.caseTimeline || []), args.newTimelineEvent];
+                        delete (next as any).newTimelineEvent;
+                      }
+                      return next;
+                    });
+                    sessionRef.current.sendToolResponse({
+                      functionResponses: [{
+                        id: fc.id,
+                        name: fc.name,
+                        response: { result: "Notebook updated" }
+                      }]
+                    });
+                  }
+                }
+              }
+            },
+            onclose: () => {
+              console.log("Session closed");
+            },
+            onerror: (e) => {
+              console.error(e);
+              setStatus('error');
+            }
+          }
+        });
+
+        sessionPromise.then(sess => {
+          sessionRef.current = sess;
+          sess.sendRealtimeInput({
+            media: {
+              mimeType: "audio/pcm;rate=16000",
+              data: "" 
+            }
+          });
+        });
+
+      } catch (e) {
+        console.error(e);
+        setStatus('error');
+      }
+    };
+
+    init();
+
+    return () => {
+      mounted.current = false;
+      if (audioContextRef.current) audioContextRef.current.close();
+    };
+  }, [config]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    let animId: number;
+
+    const draw = () => {
+      if (!ctx) return;
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      const centerX = canvas.width / 2;
+      const centerY = canvas.height / 2;
+      
+      ctx.beginPath();
+      const radius = 50 + (volume * 100) + (Math.sin(Date.now() / 500) * 5);
+      ctx.arc(centerX, centerY, radius, 0, 2 * Math.PI);
+      ctx.fillStyle = `rgba(59, 130, 246, ${0.2 + volume})`; 
+      ctx.fill();
+      
+      ctx.beginPath();
+      ctx.arc(centerX, centerY, 40, 0, 2 * Math.PI);
+      ctx.fillStyle = '#2563eb';
+      ctx.fill();
+
+      animId = requestAnimationFrame(draw);
+    };
+    draw();
+    return () => cancelAnimationFrame(animId);
+  }, [volume]);
+
+  return (
+    <div className="flex h-screen bg-slate-900 text-white overflow-hidden">
+      <div className={`absolute top-6 left-1/2 transform -translate-x-1/2 z-50 transition-all duration-500 ${toastMessage ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-4 pointer-events-none'}`}>
+        <div className="bg-blue-600 text-white px-6 py-3 rounded-full shadow-2xl flex items-center gap-3 font-medium">
+          <span className="material-symbols-rounded">check_circle</span>
+          {toastMessage}
+        </div>
+      </div>
+
+      <div className="flex-1 flex flex-col relative">
+        <div className="absolute top-6 left-6 z-10 flex gap-4">
+          <div className={`inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold uppercase tracking-wider ${status === 'connected' ? 'bg-red-500/20 text-red-400 border border-red-500/30' : 'bg-slate-700 text-slate-400'}`}>
+            <div className={`w-2 h-2 rounded-full ${status === 'connected' ? 'bg-red-500 animate-pulse' : 'bg-slate-500'}`}></div>
+            {status === 'connected' ? 'Live Simulation' : status}
+          </div>
+        </div>
+
+        <div className="flex-1 flex flex-col items-center justify-center relative">
+          <canvas ref={canvasRef} width={600} height={400} className="w-full max-w-2xl h-auto opacity-90" />
+          <p className="mt-8 text-slate-400 font-light text-lg animate-pulse">
+            {status === 'connecting' ? 'Preparing session...' : 'Listening...'}
+          </p>
+        </div>
+
+        <div className="h-24 bg-slate-800 border-t border-slate-700 flex items-center justify-center gap-6 px-8">
+          <div className="flex items-center gap-3 mr-4 bg-slate-900/50 px-4 py-2 rounded-xl border border-slate-700">
+            <span className="material-symbols-rounded text-slate-400 text-sm">mic</span>
+            <div className="flex flex-col w-32">
+              <div className="flex justify-between text-[10px] text-slate-500 font-medium uppercase mb-1">
+                <span>Mic Gain</span>
+                <span>{inputGain.toFixed(1)}x</span>
+              </div>
+              <input 
+                type="range" 
+                min="0" 
+                max="3" 
+                step="0.1" 
+                value={inputGain}
+                onChange={(e) => setInputGain(parseFloat(e.target.value))}
+                className="w-full h-1 bg-slate-600 rounded-lg appearance-none cursor-pointer accent-blue-500"
+              />
+            </div>
+          </div>
+
+          <button 
+            onClick={() => setIsMuted(!isMuted)}
+            className={`p-4 rounded-full ${isMuted ? 'bg-red-500/20 text-red-400' : 'bg-slate-700 text-white'} hover:scale-105 transition-transform`}
+          >
+            <span className="material-symbols-rounded text-2xl">{isMuted ? 'mic_off' : 'mic'}</span>
+          </button>
+          
+          <button
+            onClick={saveSession}
+            className="p-4 rounded-full bg-slate-700 text-blue-400 hover:bg-slate-600 hover:text-blue-300 hover:scale-105 transition-all"
+            title="Save Session"
+          >
+            <span className="material-symbols-rounded text-2xl">save</span>
+          </button>
+
+          <button 
+            onClick={onEnd}
+            className="px-8 py-3 bg-red-600 hover:bg-red-500 rounded-full font-semibold text-white transition-colors"
+          >
+            End Session
+          </button>
+        </div>
+      </div>
+
+      <div className="w-96 bg-slate-800 border-l border-slate-700 flex flex-col shadow-2xl z-20">
+        <div className="p-6 border-b border-slate-700 bg-slate-800/50 backdrop-blur">
+          <h3 className="text-xs font-bold text-blue-400 uppercase tracking-widest mb-1">
+            {isLegal ? 'Legal Pad' : 'Interviewer Notebook'}
+          </h3>
+          <h2 className="text-xl font-semibold text-white leading-tight">{notebook.caseTitle}</h2>
+          <div className="mt-2 text-sm text-slate-400">Phase: <span className="text-white">{notebook.currentPhase}</span></div>
+        </div>
+        
+        <div className="flex-1 overflow-y-auto p-6 space-y-8" ref={timelineScrollRef}>
+          <div>
+            <h4 className="flex items-center gap-2 text-sm font-semibold text-slate-300 mb-3">
+              <span className="material-symbols-rounded text-yellow-500 text-lg">history_edu</span>
+              Case Timeline
+            </h4>
+            {(!notebook.caseTimeline || notebook.caseTimeline.length === 0) ? (
+              <p className="text-sm text-slate-500 italic">No events recorded yet.</p>
+            ) : (
+              <div className="relative border-l border-slate-600 ml-2 space-y-4 pl-4 py-1">
+                {notebook.caseTimeline.map((event, i) => (
+                  <div key={i} className="relative text-sm text-slate-300">
+                    <div className="absolute -left-[21px] top-1.5 w-2.5 h-2.5 rounded-full bg-yellow-500 ring-4 ring-slate-800"></div>
+                    {event}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div>
+            <h4 className="flex items-center gap-2 text-sm font-semibold text-slate-300 mb-3">
+              <span className="material-symbols-rounded text-blue-500 text-lg">
+                {isLegal ? 'folder_open' : 'dataset'}
+              </span>
+              {isLegal ? 'Exhibits / Evidence' : 'Key Data Provided'}
+            </h4>
+            {notebook.keyData.length === 0 ? (
+              <p className="text-sm text-slate-500 italic">Empty.</p>
+            ) : (
+              <ul className="space-y-2">
+                {notebook.keyData.map((d, i) => (
+                  <li key={i} className="text-sm text-slate-300 bg-slate-700/50 p-2 rounded border-l-2 border-blue-500">{d}</li>
+                ))}
+              </ul>
+            )}
+          </div>
+
+          <div>
+            <h4 className="flex items-center gap-2 text-sm font-semibold text-slate-300 mb-3">
+              <span className="material-symbols-rounded text-green-500 text-lg">
+                {isLegal ? 'gavel' : 'account_tree'}
+              </span>
+              {isLegal ? 'Legal Theory / Strategy' : 'Candidate Structure'}
+            </h4>
+            {notebook.candidateFramework.length === 0 ? (
+              <p className="text-sm text-slate-500 italic">Pending...</p>
+            ) : (
+              <ul className="space-y-2">
+                {notebook.candidateFramework.map((d, i) => (
+                  <li key={i} className="text-sm text-slate-300 bg-slate-700/50 p-2 rounded border-l-2 border-green-500">{d}</li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// 4. Text Session
+const TextSession = ({ config, onEnd }: { config: CaseConfig, onEnd: () => void }) => {
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [input, setInput] = useState("");
+  const [loading, setLoading] = useState(false);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  
+  const ai = useRef(new GoogleGenAI({ apiKey: API_KEY })).current;
+  const chatSession = useRef<any>(null);
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
+  useEffect(() => {
+    const initChat = async () => {
+      setLoading(true);
+      try {
+        const isLegal = isLegalCase(config.type);
+        const sysInstruction = isLegal 
+          ? `You are a renowned Trial Lawyer conducting a ${config.difficulty} level ${config.type} case strategy session in ${config.industry}. Create realistic scenarios and provide expert legal guidance.`
+          : `You are an expert Case Interviewer from McKinsey/BCG conducting a ${config.difficulty} ${config.type} case in ${config.industry}. Guide the candidate through structured problem-solving.`;
+        
+        chatSession.current = ai.chats.create({
+          model: TEXT_MODEL,
+          config: { systemInstruction: sysInstruction }
+        });
+        
+        const result = await chatSession.current.sendMessage({ message: "Start the session." });
+        setMessages([{ role: 'model', text: result.text, timestamp: Date.now() }]);
+      } catch (e) {
+        console.error(e);
+        setMessages([{ role: 'system', text: "Failed to start session. Please check your API key.", timestamp: Date.now() }]);
+      } finally {
+        setLoading(false);
+      }
+    };
+    initChat();
+  }, []);
+
+  const handleSend = async () => {
+    if (!input.trim() || loading) return;
+    const userMsg = { role: 'user' as const, text: input, timestamp: Date.now() };
+    setMessages(prev => [...prev, userMsg]);
+    setInput("");
+    setLoading(true);
+
+    try {
+      const result = await chatSession.current.sendMessage({ message: input });
+      setMessages(prev => [...prev, { role: 'model', text: result.text, timestamp: Date.now() }]);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="flex flex-col h-screen bg-slate-900">
+      <div className="h-16 border-b border-slate-700 flex items-center justify-between px-6 bg-slate-800/50 backdrop-blur">
+        <div className="flex items-center gap-3">
+          <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center">
+            <span className="material-symbols-rounded text-white text-sm">chat</span>
+          </div>
+          <h1 className="font-semibold text-white">{config.type} <span className="text-slate-500 text-sm font-normal">| {config.difficulty}</span></h1>
+        </div>
+        <button onClick={onEnd} className="text-slate-400 hover:text-white text-sm">End Session</button>
+      </div>
+
+      <div className="flex-1 overflow-y-auto p-6 space-y-6">
+        {messages.map((msg, i) => (
+          <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+            <div className={`max-w-2xl p-4 rounded-2xl ${
+              msg.role === 'user' 
+                ? 'bg-blue-600 text-white rounded-tr-none' 
+                : 'bg-slate-800 border border-slate-700 text-slate-200 rounded-tl-none'
+            }`}>
+              <div className="whitespace-pre-wrap text-sm leading-relaxed">{msg.text}</div>
+            </div>
+          </div>
+        ))}
+        {loading && (
+          <div className="flex justify-start">
+            <div className="bg-slate-800 p-4 rounded-2xl rounded-tl-none flex gap-2">
+              <div className="w-2 h-2 bg-slate-500 rounded-full animate-bounce"></div>
+              <div className="w-2 h-2 bg-slate-500 rounded-full animate-bounce delay-75"></div>
+              <div className="w-2 h-2 bg-slate-500 rounded-full animate-bounce delay-150"></div>
+            </div>
+          </div>
+        )}
+        <div ref={messagesEndRef}></div>
+      </div>
+
+      <div className="p-4 bg-slate-800 border-t border-slate-700">
+        <div className="max-w-4xl mx-auto flex gap-4">
+          <input 
+            type="text" 
+            value={input}
+            onChange={e => setInput(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && handleSend()}
+            placeholder="Type your response..."
+            className="flex-1 bg-slate-900 border border-slate-600 text-white rounded-xl px-4 py-3 focus:ring-2 focus:ring-blue-500 outline-none"
+          />
+          <button 
+            onClick={handleSend}
+            disabled={loading}
+            className="bg-blue-600 hover:bg-blue-500 text-white w-12 h-12 rounded-xl flex items-center justify-center disabled:opacity-50"
+          >
+            <span className="material-symbols-rounded">send</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// 5. Main App
+const Index = () => {
+  const [view, setView] = useState<ViewState>('landing');
+  const [config, setConfig] = useState<CaseConfig>({ type: '', industry: '', difficulty: '' });
+  const [initialNotebook, setInitialNotebook] = useState<NotebookState | undefined>(undefined);
+
+  const startSetup = () => {
+    setInitialNotebook(undefined);
+    setView('setup');
+  };
+  
+  const handleConfigComplete = (newConfig: CaseConfig, mode: 'live' | 'text') => {
+    setConfig(newConfig);
+    setView(mode === 'live' ? 'live-interview' : 'text-interview');
+  };
+
+  const handleLoadSession = (saved: SavedSession) => {
+    setConfig(saved.config);
+    setInitialNotebook(saved.notebook);
+    setView('live-interview');
+  };
+
+  const handleEnd = () => setView('landing');
+
+  return (
+    <div className="antialiased">
+      {view === 'landing' && <Landing onStart={startSetup} />}
+      {view === 'setup' && <Setup onConfigComplete={handleConfigComplete} onLoadSession={handleLoadSession} />}
+      {view === 'live-interview' && <LiveSession config={config} initialNotebook={initialNotebook} onEnd={handleEnd} />}
+      {view === 'text-interview' && <TextSession config={config} onEnd={handleEnd} />}
     </div>
   );
 };
