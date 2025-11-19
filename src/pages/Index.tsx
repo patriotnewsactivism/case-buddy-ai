@@ -1,39 +1,16 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { GoogleGenAI, LiveServerMessage, Modality, Type } from "@google/genai";
+import { ViewState, CaseConfig, Message, NotebookState, SavedSession, TranscriptEntry, FeedbackReport, FrameworkTemplate } from '@/types';
+import { saveSession as saveSessionToStorage, getLastSession } from '@/utils/storage';
+import { Timer } from '@/components/Timer';
+import { TemplatesView } from '@/components/TemplatesView';
+import { HistoryView } from '@/components/HistoryView';
+import { FeedbackView } from '@/components/FeedbackView';
 
 // --- Configuration ---
 const LIVE_MODEL = 'gemini-2.0-flash-exp';
 const TEXT_MODEL = 'gemini-2.0-flash-exp';
 const API_KEY = import.meta.env.VITE_GOOGLE_API_KEY || '';
-
-// --- Types ---
-type ViewState = 'landing' | 'setup' | 'live-interview' | 'text-interview';
-
-interface CaseConfig {
-  type: string;
-  industry: string;
-  difficulty: string;
-}
-
-interface Message {
-  role: 'user' | 'model' | 'system';
-  text: string;
-  timestamp: number;
-}
-
-interface NotebookState {
-  caseTitle: string;
-  currentPhase: string;
-  keyData: string[];
-  candidateFramework: string[];
-  caseTimeline: string[];
-}
-
-interface SavedSession {
-  config: CaseConfig;
-  notebook: NotebookState;
-  date: number;
-}
 
 // --- Constants ---
 const CASE_TYPES = [
@@ -89,9 +66,30 @@ function float32ToInt16(float32: Float32Array): Int16Array {
 // --- Components ---
 
 // 1. Landing Component
-const Landing = ({ onStart }: { onStart: () => void }) => (
+const Landing = ({ onStart, onViewHistory, onViewTemplates }: { 
+  onStart: () => void;
+  onViewHistory: () => void;
+  onViewTemplates: () => void;
+}) => (
   <div className="flex flex-col items-center justify-center min-h-screen bg-slate-900 text-white p-6 relative overflow-hidden">
     <div className="absolute inset-0 opacity-10 bg-[radial-gradient(#3b82f6_1px,transparent_1px)] [background-size:16px_16px]"></div>
+    
+    <div className="absolute top-6 right-6 flex gap-3 z-20">
+      <button
+        onClick={onViewTemplates}
+        className="px-4 py-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg flex items-center gap-2 transition-colors"
+      >
+        <span className="material-symbols-rounded text-lg">account_tree</span>
+        <span className="font-medium">Templates</span>
+      </button>
+      <button
+        onClick={onViewHistory}
+        className="px-4 py-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg flex items-center gap-2 transition-colors"
+      >
+        <span className="material-symbols-rounded text-lg">history</span>
+        <span className="font-medium">History</span>
+      </button>
+    </div>
     
     <div className="z-10 max-w-3xl text-center space-y-8">
       <div className="inline-flex items-center justify-center p-3 bg-blue-500/10 rounded-2xl mb-4 ring-1 ring-blue-500/30">
@@ -132,9 +130,11 @@ const Landing = ({ onStart }: { onStart: () => void }) => (
 );
 
 // 2. Setup Component
-const Setup = ({ onConfigComplete, onLoadSession }: { 
-  onConfigComplete: (config: CaseConfig, mode: 'live' | 'text') => void, 
-  onLoadSession: (saved: SavedSession) => void 
+const Setup = ({ onConfigComplete, onLoadSession, onBack, onViewTemplates }: { 
+  onConfigComplete: (config: CaseConfig, mode: 'live' | 'text') => void;
+  onLoadSession: (saved: SavedSession) => void;
+  onBack: () => void;
+  onViewTemplates: () => void;
 }) => {
   const [config, setConfig] = useState<CaseConfig>({
     type: 'Profitability',
@@ -144,18 +144,29 @@ const Setup = ({ onConfigComplete, onLoadSession }: {
   const [savedSession, setSavedSession] = useState<SavedSession | null>(null);
 
   useEffect(() => {
-    const saved = localStorage.getItem('casebuddy_session');
+    const saved = getLastSession();
     if (saved) {
-      try {
-        setSavedSession(JSON.parse(saved));
-      } catch (e) {
-        console.error("Failed to parse saved session", e);
-      }
+      setSavedSession(saved);
     }
   }, []);
 
   return (
     <div className="min-h-screen bg-slate-900 text-white flex items-center justify-center p-4">
+      <button
+        onClick={onBack}
+        className="absolute top-6 left-6 p-2 hover:bg-slate-800 rounded-lg transition-colors"
+      >
+        <span className="material-symbols-rounded">arrow_back</span>
+      </button>
+
+      <button
+        onClick={onViewTemplates}
+        className="absolute top-6 right-6 px-4 py-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg flex items-center gap-2 transition-colors"
+      >
+        <span className="material-symbols-rounded text-lg">account_tree</span>
+        <span className="font-medium">View Templates</span>
+      </button>
+
       <div className="w-full max-w-md bg-slate-800 rounded-2xl border border-slate-700 p-8 space-y-6 shadow-2xl">
         <h2 className="text-2xl font-bold mb-6">Session Configuration</h2>
         
@@ -243,14 +254,15 @@ const Setup = ({ onConfigComplete, onLoadSession }: {
 
 // 3. Live Interface
 const LiveSession = ({ config, initialNotebook, onEnd }: { 
-  config: CaseConfig, 
-  initialNotebook?: NotebookState, 
-  onEnd: () => void 
+  config: CaseConfig;
+  initialNotebook?: NotebookState;
+  onEnd: (session: SavedSession) => void;
 }) => {
   const [status, setStatus] = useState<'connecting' | 'connected' | 'error'>('connecting');
   const [volume, setVolume] = useState(0);
   const [isMuted, setIsMuted] = useState(false);
   const [inputGain, setInputGain] = useState(1.0);
+  const [sessionDuration, setSessionDuration] = useState(0);
   const [notebook, setNotebook] = useState<NotebookState>(initialNotebook || {
     caseTitle: "Initializing...",
     currentPhase: "Setup",
@@ -260,8 +272,8 @@ const LiveSession = ({ config, initialNotebook, onEnd }: {
   });
 
   const [toastMessage, setToastMessage] = useState<string | null>(null);
-  const [isTranscriptionEnabled, setIsTranscriptionEnabled] = useState(false);
-  const [transcript, setTranscript] = useState<{sender: 'You' | 'AI', text: string}[]>([]);
+  const [isTranscriptionEnabled, setIsTranscriptionEnabled] = useState(true);
+  const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
   const [currentInputTrans, setCurrentInputTrans] = useState("");
   const [currentOutputTrans, setCurrentOutputTrans] = useState("");
   
@@ -274,6 +286,7 @@ const LiveSession = ({ config, initialNotebook, onEnd }: {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const timelineScrollRef = useRef<HTMLDivElement>(null);
+  const sessionIdRef = useRef(`session-${Date.now()}`);
 
   const isLegal = isLegalCase(config.type);
 
@@ -285,7 +298,7 @@ const LiveSession = ({ config, initialNotebook, onEnd }: {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [transcript, currentInputTrans, currentOutputTrans, isTranscriptionEnabled]);
+  }, [transcript, currentInputTrans, currentOutputTrans]);
 
   useEffect(() => {
     if (timelineScrollRef.current) {
@@ -299,13 +312,29 @@ const LiveSession = ({ config, initialNotebook, onEnd }: {
   };
 
   const saveSession = () => {
-    const sessionData: SavedSession = {
+    const session: SavedSession = {
+      id: sessionIdRef.current,
       config,
       notebook,
-      date: Date.now()
+      date: Date.now(),
+      duration: sessionDuration,
+      transcript
     };
-    localStorage.setItem('casebuddy_session', JSON.stringify(sessionData));
+    saveSessionToStorage(session);
     showToast("Session Saved Successfully");
+  };
+
+  const handleEndSession = () => {
+    const session: SavedSession = {
+      id: sessionIdRef.current,
+      config,
+      notebook,
+      date: Date.now(),
+      duration: sessionDuration,
+      transcript
+    };
+    saveSessionToStorage(session);
+    onEnd(session);
   };
 
   useEffect(() => {
@@ -374,8 +403,8 @@ const LiveSession = ({ config, initialNotebook, onEnd }: {
         };
 
         let systemInstruction = isLegal 
-          ? `You are an elite Senior Litigation Partner conducting a ${config.difficulty} level ${config.type} simulation in ${config.industry}. Guide the user through proper legal procedure, questioning technique, and case strategy. Use the updateNotebook tool to track progress.`
-          : `You are an expert McKinsey/BCG Case Interviewer conducting a ${config.difficulty} level ${config.type} case in ${config.industry}. Guide the candidate through structured problem-solving. Use the updateNotebook tool to track their framework and analysis.`;
+          ? `You are an elite Senior Litigation Partner conducting a ${config.difficulty} level ${config.type} simulation in ${config.industry}. Guide the user through proper legal procedure, questioning technique, and case strategy. Use the updateNotebook tool frequently to track progress, evidence, legal theory, and timeline events.`
+          : `You are an expert McKinsey/BCG Case Interviewer conducting a ${config.difficulty} level ${config.type} case in ${config.industry}. Guide the candidate through structured problem-solving. Use the updateNotebook tool to track their framework, analysis, and key milestones.`;
 
         const sessionPromise = ai.live.connect({
           model: LIVE_MODEL,
@@ -412,6 +441,27 @@ const LiveSession = ({ config, initialNotebook, onEnd }: {
                 
                 sourcesRef.current.add(src);
                 src.onended = () => sourcesRef.current.delete(src);
+              }
+
+              const inputTx = msg.serverContent?.inputTranscription?.text;
+              const outputTx = msg.serverContent?.outputTranscription?.text;
+              
+              if (inputTx) setCurrentInputTrans(prev => prev + inputTx);
+              if (outputTx) setCurrentOutputTrans(prev => prev + outputTx);
+
+              if (msg.serverContent?.turnComplete) {
+                setCurrentInputTrans(curr => {
+                  if (curr.trim()) {
+                    setTranscript(t => [...t, { sender: 'You', text: curr, timestamp: Date.now() }]);
+                  }
+                  return "";
+                });
+                setCurrentOutputTrans(curr => {
+                  if (curr.trim()) {
+                    setTranscript(t => [...t, { sender: 'AI', text: curr, timestamp: Date.now() }]);
+                  }
+                  return "";
+                });
               }
 
               if (msg.toolCall) {
@@ -513,8 +563,14 @@ const LiveSession = ({ config, initialNotebook, onEnd }: {
         <div className="absolute top-6 left-6 z-10 flex gap-4">
           <div className={`inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold uppercase tracking-wider ${status === 'connected' ? 'bg-red-500/20 text-red-400 border border-red-500/30' : 'bg-slate-700 text-slate-400'}`}>
             <div className={`w-2 h-2 rounded-full ${status === 'connected' ? 'bg-red-500 animate-pulse' : 'bg-slate-500'}`}></div>
-            {status === 'connected' ? 'Live Simulation' : status}
+            {status === 'connected' ? 'Live' : status}
           </div>
+          <button 
+            onClick={() => setIsTranscriptionEnabled(!isTranscriptionEnabled)}
+            className={`px-3 py-1 rounded-full text-xs font-bold border transition-colors ${isTranscriptionEnabled ? 'bg-white text-slate-900 border-white' : 'bg-transparent text-slate-400 border-slate-600 hover:border-slate-400'}`}
+          >
+            {isTranscriptionEnabled ? 'CC ON' : 'CC OFF'}
+          </button>
         </div>
 
         <div className="flex-1 flex flex-col items-center justify-center relative">
@@ -522,14 +578,35 @@ const LiveSession = ({ config, initialNotebook, onEnd }: {
           <p className="mt-8 text-slate-400 font-light text-lg animate-pulse">
             {status === 'connecting' ? 'Preparing session...' : 'Listening...'}
           </p>
+
+          {isTranscriptionEnabled && (transcript.length > 0 || currentInputTrans || currentOutputTrans) && (
+            <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2 w-full max-w-2xl max-h-[300px] overflow-y-auto bg-black/60 backdrop-blur-md rounded-xl p-4 border border-white/10 scrollbar-hide" ref={scrollRef}>
+              <div className="flex flex-col gap-2">
+                {transcript.map((t, i) => (
+                  <div key={i} className={`text-sm ${t.sender === 'You' ? 'text-blue-300' : 'text-white'}`}>
+                    <span className="font-bold opacity-70 uppercase text-xs mr-2">{t.sender}:</span>
+                    {t.text}
+                  </div>
+                ))}
+                {(currentInputTrans || currentOutputTrans) && (
+                  <div className="text-sm italic opacity-80 animate-pulse">
+                    {currentInputTrans && <span className="text-blue-300"><span className="font-bold text-xs mr-2">YOU:</span>{currentInputTrans}</span>}
+                    {currentOutputTrans && <span className="text-white"><span className="font-bold text-xs mr-2">AI:</span>{currentOutputTrans}</span>}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
         </div>
 
-        <div className="h-24 bg-slate-800 border-t border-slate-700 flex items-center justify-center gap-6 px-8">
-          <div className="flex items-center gap-3 mr-4 bg-slate-900/50 px-4 py-2 rounded-xl border border-slate-700">
+        <div className="h-24 bg-slate-800 border-t border-slate-700 flex items-center justify-center gap-4 px-8">
+          <Timer onTimeUpdate={setSessionDuration} />
+
+          <div className="flex items-center gap-3 bg-slate-900/50 px-4 py-2 rounded-xl border border-slate-700">
             <span className="material-symbols-rounded text-slate-400 text-sm">mic</span>
             <div className="flex flex-col w-32">
               <div className="flex justify-between text-[10px] text-slate-500 font-medium uppercase mb-1">
-                <span>Mic Gain</span>
+                <span>Gain</span>
                 <span>{inputGain.toFixed(1)}x</span>
               </div>
               <input 
@@ -560,10 +637,10 @@ const LiveSession = ({ config, initialNotebook, onEnd }: {
           </button>
 
           <button 
-            onClick={onEnd}
+            onClick={handleEndSession}
             className="px-8 py-3 bg-red-600 hover:bg-red-500 rounded-full font-semibold text-white transition-colors"
           >
-            End Session
+            End & Get Feedback
           </button>
         </div>
       </div>
@@ -577,7 +654,7 @@ const LiveSession = ({ config, initialNotebook, onEnd }: {
           <div className="mt-2 text-sm text-slate-400">Phase: <span className="text-white">{notebook.currentPhase}</span></div>
         </div>
         
-        <div className="flex-1 overflow-y-auto p-6 space-y-8" ref={timelineScrollRef}>
+        <div className="flex-1 overflow-y-auto p-6 space-y-8 scrollbar-hide" ref={timelineScrollRef}>
           <div>
             <h4 className="flex items-center gap-2 text-sm font-semibold text-slate-300 mb-3">
               <span className="material-symbols-rounded text-yellow-500 text-lg">history_edu</span>
@@ -639,11 +716,13 @@ const LiveSession = ({ config, initialNotebook, onEnd }: {
 };
 
 // 4. Text Session
-const TextSession = ({ config, onEnd }: { config: CaseConfig, onEnd: () => void }) => {
+const TextSession = ({ config, onEnd }: { config: CaseConfig; onEnd: (session: SavedSession) => void }) => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [sessionDuration, setSessionDuration] = useState(0);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const sessionIdRef = useRef(`session-${Date.now()}`);
   
   const ai = useRef(new GoogleGenAI({ apiKey: API_KEY })).current;
   const chatSession = useRef<any>(null);
@@ -695,6 +774,24 @@ const TextSession = ({ config, onEnd }: { config: CaseConfig, onEnd: () => void 
     }
   };
 
+  const handleEndSession = () => {
+    const session: SavedSession = {
+      id: sessionIdRef.current,
+      config,
+      notebook: {
+        caseTitle: `${config.type} - Text Session`,
+        currentPhase: "Completed",
+        keyData: [],
+        candidateFramework: [],
+        caseTimeline: []
+      },
+      date: Date.now(),
+      duration: sessionDuration
+    };
+    saveSessionToStorage(session);
+    onEnd(session);
+  };
+
   return (
     <div className="flex flex-col h-screen bg-slate-900">
       <div className="h-16 border-b border-slate-700 flex items-center justify-between px-6 bg-slate-800/50 backdrop-blur">
@@ -704,7 +801,12 @@ const TextSession = ({ config, onEnd }: { config: CaseConfig, onEnd: () => void 
           </div>
           <h1 className="font-semibold text-white">{config.type} <span className="text-slate-500 text-sm font-normal">| {config.difficulty}</span></h1>
         </div>
-        <button onClick={onEnd} className="text-slate-400 hover:text-white text-sm">End Session</button>
+        <div className="flex items-center gap-4">
+          <Timer onTimeUpdate={setSessionDuration} />
+          <button onClick={handleEndSession} className="px-4 py-2 bg-red-600 hover:bg-red-500 rounded-lg text-sm font-semibold transition-colors">
+            End & Get Feedback
+          </button>
+        </div>
       </div>
 
       <div className="flex-1 overflow-y-auto p-6 space-y-6">
@@ -737,14 +839,14 @@ const TextSession = ({ config, onEnd }: { config: CaseConfig, onEnd: () => void 
             type="text" 
             value={input}
             onChange={e => setInput(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && handleSend()}
+            onKeyDown={e => e.key === 'Enter' && !e.shiftKey && handleSend()}
             placeholder="Type your response..."
             className="flex-1 bg-slate-900 border border-slate-600 text-white rounded-xl px-4 py-3 focus:ring-2 focus:ring-blue-500 outline-none"
           />
           <button 
             onClick={handleSend}
             disabled={loading}
-            className="bg-blue-600 hover:bg-blue-500 text-white w-12 h-12 rounded-xl flex items-center justify-center disabled:opacity-50"
+            className="bg-blue-600 hover:bg-blue-500 text-white w-12 h-12 rounded-xl flex items-center justify-center disabled:opacity-50 transition-colors"
           >
             <span className="material-symbols-rounded">send</span>
           </button>
@@ -759,6 +861,7 @@ const Index = () => {
   const [view, setView] = useState<ViewState>('landing');
   const [config, setConfig] = useState<CaseConfig>({ type: '', industry: '', difficulty: '' });
   const [initialNotebook, setInitialNotebook] = useState<NotebookState | undefined>(undefined);
+  const [completedSession, setCompletedSession] = useState<SavedSession | null>(null);
 
   const startSetup = () => {
     setInitialNotebook(undefined);
@@ -776,14 +879,71 @@ const Index = () => {
     setView('live-interview');
   };
 
-  const handleEnd = () => setView('landing');
+  const handleSessionEnd = (session: SavedSession) => {
+    setCompletedSession(session);
+    setView('feedback');
+  };
+
+  const handleFeedbackComplete = (feedback: FeedbackReport) => {
+    if (completedSession) {
+      const updatedSession = { ...completedSession, feedback };
+      saveSessionToStorage(updatedSession);
+    }
+    setView('landing');
+  };
 
   return (
     <div className="antialiased">
-      {view === 'landing' && <Landing onStart={startSetup} />}
-      {view === 'setup' && <Setup onConfigComplete={handleConfigComplete} onLoadSession={handleLoadSession} />}
-      {view === 'live-interview' && <LiveSession config={config} initialNotebook={initialNotebook} onEnd={handleEnd} />}
-      {view === 'text-interview' && <TextSession config={config} onEnd={handleEnd} />}
+      {view === 'landing' && (
+        <Landing 
+          onStart={startSetup} 
+          onViewHistory={() => setView('history')}
+          onViewTemplates={() => setView('templates')}
+        />
+      )}
+      {view === 'setup' && (
+        <Setup 
+          onConfigComplete={handleConfigComplete} 
+          onLoadSession={handleLoadSession}
+          onBack={() => setView('landing')}
+          onViewTemplates={() => setView('templates')}
+        />
+      )}
+      {view === 'live-interview' && (
+        <LiveSession 
+          config={config} 
+          initialNotebook={initialNotebook} 
+          onEnd={handleSessionEnd}
+        />
+      )}
+      {view === 'text-interview' && (
+        <TextSession 
+          config={config} 
+          onEnd={handleSessionEnd}
+        />
+      )}
+      {view === 'feedback' && completedSession && (
+        <FeedbackView
+          session={completedSession}
+          onComplete={handleFeedbackComplete}
+          onSkip={() => setView('landing')}
+        />
+      )}
+      {view === 'history' && (
+        <HistoryView
+          onBack={() => setView('landing')}
+          onResumeSession={(session) => {
+            setConfig(session.config);
+            setInitialNotebook(session.notebook);
+            setView('live-interview');
+          }}
+        />
+      )}
+      {view === 'templates' && (
+        <TemplatesView
+          onBack={() => setView('landing')}
+        />
+      )}
     </div>
   );
 };
