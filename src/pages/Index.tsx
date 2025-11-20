@@ -276,6 +276,9 @@ const LiveSession = ({ config, initialNotebook, onEnd }: {
   const [volume, setVolume] = useState(0);
   const [isMuted, setIsMuted] = useState(false);
   const [inputGain, setInputGain] = useState(1.0);
+  const [noiseSuppression, setNoiseSuppression] = useState(true);
+  const [echoCancellation, setEchoCancellation] = useState(true);
+  const [showSettings, setShowSettings] = useState(false);
   const [notebook, setNotebook] = useState<NotebookState>(initialNotebook || {
     caseTitle: "Initializing...",
     currentPhase: "Setup",
@@ -285,6 +288,9 @@ const LiveSession = ({ config, initialNotebook, onEnd }: {
   });
   const [sessionDuration, setSessionDuration] = useState(0);
   const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
+  const [audioFrequencyData, setAudioFrequencyData] = useState<Uint8Array>(new Uint8Array(128));
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
 
   // Audio Context Refs
   const inputAudioContextRef = useRef<AudioContext | null>(null);
@@ -394,20 +400,48 @@ const LiveSession = ({ config, initialNotebook, onEnd }: {
 
         setStatus('connecting');
 
-        // Request microphone access
-        console.log('Requesting microphone access...');
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        // Request microphone access with enhanced settings
+        console.log('🎤 Requesting microphone access...');
+        console.log('Audio settings:', { 
+          echoCancellation, 
+          noiseSuppression, 
+          autoGainControl: true 
+        });
+        const stream = await navigator.mediaDevices.getUserMedia({ 
+          audio: {
+            channelCount: 1,
+            sampleRate: 16000,
+            echoCancellation: echoCancellation,
+            noiseSuppression: noiseSuppression,
+            autoGainControl: true
+          }
+        });
+        console.log('✅ Microphone access granted');
+        console.log('Audio tracks:', stream.getAudioTracks().map(track => ({
+          label: track.label,
+          settings: track.getSettings()
+        })));
         mediaStreamRef.current = stream;
 
-        // Setup Audio Contexts
-        console.log('Setting up audio contexts...');
+        console.log('🔊 Setting up audio contexts...');
         const inputAc = new AudioContextClass({ sampleRate: 16000 });
         const outputAc = new AudioContextClass({ sampleRate: 24000 });
         inputAudioContextRef.current = inputAc;
         outputAudioContextRef.current = outputAc;
+        console.log('Input context:', inputAc.state, 'Sample rate:', inputAc.sampleRate);
+        console.log('Output context:', outputAc.state, 'Sample rate:', outputAc.sampleRate);
 
+        console.log('🎵 Creating audio analyser and processor...');
         const source = inputAc.createMediaStreamSource(stream);
         sourceNodeRef.current = source;
+        
+        // Create analyser for visualization
+        const analyser = inputAc.createAnalyser();
+        analyser.fftSize = 256;
+        analyser.smoothingTimeConstant = 0.8;
+        analyserRef.current = analyser;
+        console.log('Analyser created - FFT size:', analyser.fftSize, 'Frequency bins:', analyser.frequencyBinCount);
+        
         const processor = inputAc.createScriptProcessor(4096, 1, 1);
         scriptProcessorRef.current = processor;
 
@@ -432,7 +466,8 @@ const LiveSession = ({ config, initialNotebook, onEnd }: {
           sessionRef.current.sendRealtimeInput({ media: pcmBlob });
         };
 
-        source.connect(processor);
+        source.connect(analyser);
+        analyser.connect(processor);
         processor.connect(inputAc.destination);
 
         // System instruction
@@ -493,7 +528,9 @@ const LiveSession = ({ config, initialNotebook, onEnd }: {
           }
         };
 
-        console.log('Connecting to Gemini Live API...');
+        console.log('🌐 Connecting to Gemini Live API...');
+        console.log('Model:', LIVE_MODEL);
+        console.log('Voice:', isLegal ? 'Fenrir' : 'Kore');
         const sessionPromise = ai.live.connect({
           model: LIVE_MODEL,
           config: {
@@ -510,7 +547,8 @@ const LiveSession = ({ config, initialNotebook, onEnd }: {
           },
           callbacks: {
             onopen: () => {
-              console.log('Session connected!');
+              console.log('✅ Session connected successfully!');
+              console.log('Connection status: OPEN');
               setStatus('connected');
               startTimeRef.current = Date.now();
 
@@ -525,11 +563,13 @@ const LiveSession = ({ config, initialNotebook, onEnd }: {
               // Handle Audio
               const audioData = msg.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
               if (audioData && outputAudioContextRef.current) {
+                console.log('🔊 Received audio chunk, size:', audioData.length, 'chars');
                 const ctx = outputAudioContextRef.current;
                 const uint8 = base64ToUint8Array(audioData);
 
                 try {
                   const audioBuffer = await decodeAudioData(uint8, ctx, 24000, 1);
+                  console.log('Audio decoded - duration:', audioBuffer.duration.toFixed(2), 's');
                   const now = ctx.currentTime;
                   const start = Math.max(now, nextStartTimeRef.current);
 
@@ -542,12 +582,13 @@ const LiveSession = ({ config, initialNotebook, onEnd }: {
 
                   source.onended = () => sourcesRef.current.delete(source);
                 } catch (err) {
-                  console.error("Error decoding audio chunk", err);
+                  console.error("❌ Error decoding audio chunk", err);
                 }
               }
 
               const interrupted = msg.serverContent?.interrupted;
               if (interrupted) {
+                console.log('⚠️ Audio interrupted - clearing queue');
                 sourcesRef.current.forEach(s => {
                   try { s.stop(); } catch(e) {}
                 });
@@ -557,10 +598,11 @@ const LiveSession = ({ config, initialNotebook, onEnd }: {
 
               // Handle Tools
               if (msg.toolCall) {
+                console.log('🔧 Tool call received:', msg.toolCall.functionCalls.length, 'functions');
                 for (const fc of msg.toolCall.functionCalls) {
                   if (fc.name === 'updateNotebook') {
                     const args = fc.args as any;
-                    console.log('Notebook update:', args);
+                    console.log('📝 Notebook update:', args);
                     setNotebook(prev => {
                       const next = { ...prev, ...args };
                       if (args.newTimelineEvent) {
@@ -580,11 +622,11 @@ const LiveSession = ({ config, initialNotebook, onEnd }: {
               }
             },
             onclose: () => {
-              console.log("Session closed");
+              console.log("⚠️ Session closed by server");
               stopSession();
             },
             onerror: (e) => {
-              console.error('Session error:', e);
+              console.error('❌ Session error:', e);
               setStatus('error');
             }
           }
@@ -592,7 +634,7 @@ const LiveSession = ({ config, initialNotebook, onEnd }: {
 
         sessionPromise.then(sess => {
           sessionRef.current = sess;
-          console.log('Session ready');
+          console.log('✅ Session ready - sending initial audio input');
           sess.sendRealtimeInput({
             media: {
               mimeType: "audio/pcm;rate=16000",
@@ -602,7 +644,8 @@ const LiveSession = ({ config, initialNotebook, onEnd }: {
         });
 
       } catch (e) {
-        console.error('Failed to initialize:', e);
+        console.error('❌ Failed to initialize:', e);
+        console.error('Error details:', e instanceof Error ? e.message : 'Unknown error');
         setStatus('error');
       }
     };
@@ -613,7 +656,55 @@ const LiveSession = ({ config, initialNotebook, onEnd }: {
       mounted.current = false;
       stopSession();
     };
-  }, [config]);
+  }, [config, echoCancellation, noiseSuppression]);
+
+  // Audio visualization effect
+  useEffect(() => {
+    if (!analyserRef.current || !canvasRef.current) return;
+
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const analyser = analyserRef.current;
+    const bufferLength = analyser.frequencyBinCount;
+    const dataArray = new Uint8Array(bufferLength);
+
+    let animationId: number;
+
+    const draw = () => {
+      animationId = requestAnimationFrame(draw);
+
+      analyser.getByteFrequencyData(dataArray);
+      setAudioFrequencyData(new Uint8Array(dataArray));
+
+      ctx.fillStyle = 'rgb(15, 23, 42)';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      const barWidth = (canvas.width / bufferLength) * 2.5;
+      let barHeight;
+      let x = 0;
+
+      for (let i = 0; i < bufferLength; i++) {
+        barHeight = (dataArray[i] / 255) * canvas.height * 0.8;
+
+        const gradient = ctx.createLinearGradient(0, canvas.height - barHeight, 0, canvas.height);
+        gradient.addColorStop(0, 'rgb(59, 130, 246)');
+        gradient.addColorStop(1, 'rgb(37, 99, 235)');
+
+        ctx.fillStyle = gradient;
+        ctx.fillRect(x, canvas.height - barHeight, barWidth, barHeight);
+
+        x += barWidth + 1;
+      }
+    };
+
+    draw();
+
+    return () => {
+      cancelAnimationFrame(animationId);
+    };
+  }, [analyserRef.current, status]);
 
   return (
     <div className="flex h-screen bg-slate-900 text-white overflow-hidden">
@@ -632,16 +723,121 @@ const LiveSession = ({ config, initialNotebook, onEnd }: {
             <div className={`w-2 h-2 rounded-full ${status === 'connected' ? 'bg-red-500 animate-pulse' : 'bg-slate-500'}`}></div>
             {status === 'connected' ? 'Live Simulation' : status}
           </div>
+          <button
+            onClick={() => setShowSettings(!showSettings)}
+            className="p-2 bg-slate-800/80 hover:bg-slate-700 border border-slate-700 rounded-lg transition-colors"
+            title="Audio Settings"
+          >
+            <span className="material-symbols-rounded text-sm">settings</span>
+          </button>
         </div>
 
-        <div className="flex-1 flex flex-col items-center justify-center relative">
-          <div className="w-32 h-32 rounded-full bg-blue-500/20 border-4 border-blue-500/30 flex items-center justify-center relative">
-            <div className={`absolute inset-0 rounded-full ${status === 'connected' ? 'animate-ping' : ''} bg-blue-500/20`}></div>
-            <span className="material-symbols-rounded text-blue-400 text-5xl z-10">mic</span>
+        {/* Audio Settings Panel */}
+        {showSettings && (
+          <div className="absolute top-20 left-6 z-10 bg-slate-800 border border-slate-700 rounded-xl p-4 w-72 shadow-2xl">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="font-semibold text-white">Audio Settings</h3>
+              <button onClick={() => setShowSettings(false)}>
+                <span className="material-symbols-rounded text-slate-400 text-sm">close</span>
+              </button>
+            </div>
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <label className="text-sm text-slate-300">Noise Suppression</label>
+                <button
+                  onClick={() => setNoiseSuppression(!noiseSuppression)}
+                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                    noiseSuppression ? 'bg-blue-600' : 'bg-slate-600'
+                  }`}
+                >
+                  <span
+                    className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                      noiseSuppression ? 'translate-x-6' : 'translate-x-1'
+                    }`}
+                  />
+                </button>
+              </div>
+              <div className="flex items-center justify-between">
+                <label className="text-sm text-slate-300">Echo Cancellation</label>
+                <button
+                  onClick={() => setEchoCancellation(!echoCancellation)}
+                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                    echoCancellation ? 'bg-blue-600' : 'bg-slate-600'
+                  }`}
+                >
+                  <span
+                    className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                      echoCancellation ? 'translate-x-6' : 'translate-x-1'
+                    }`}
+                  />
+                </button>
+              </div>
+              <div className="pt-2 border-t border-slate-700">
+                <p className="text-xs text-slate-400">
+                  <span className="material-symbols-rounded text-xs mr-1">info</span>
+                  Changes require restarting the session
+                </p>
+              </div>
+            </div>
           </div>
+        )}
+
+        <div className="flex-1 flex flex-col items-center justify-center relative px-8">
+          {/* Audio Visualizer */}
+          <div className="w-full max-w-3xl mb-8">
+            <canvas
+              ref={canvasRef}
+              width={800}
+              height={200}
+              className="w-full h-32 rounded-xl bg-slate-950/50 border border-slate-800"
+            />
+          </div>
+
+          {/* Mic Icon with Pulse */}
+          <div className="relative">
+            <div className="w-32 h-32 rounded-full bg-blue-500/20 border-4 border-blue-500/30 flex items-center justify-center relative">
+              <div className={`absolute inset-0 rounded-full ${status === 'connected' && volume > 0.1 ? 'animate-ping' : ''} bg-blue-500/20`}></div>
+              <span className="material-symbols-rounded text-blue-400 text-5xl z-10">mic</span>
+            </div>
+            {/* Volume Indicator Ring */}
+            <svg className="absolute inset-0 w-32 h-32" style={{ transform: 'rotate(-90deg)' }}>
+              <circle
+                cx="64"
+                cy="64"
+                r="60"
+                stroke="currentColor"
+                strokeWidth="4"
+                fill="none"
+                className="text-blue-500/20"
+              />
+              <circle
+                cx="64"
+                cy="64"
+                r="60"
+                stroke="currentColor"
+                strokeWidth="4"
+                fill="none"
+                strokeDasharray={`${2 * Math.PI * 60}`}
+                strokeDashoffset={`${2 * Math.PI * 60 * (1 - volume)}`}
+                className="text-blue-500 transition-all duration-100"
+                strokeLinecap="round"
+              />
+            </svg>
+          </div>
+          
           <p className="mt-8 text-slate-400 font-light text-lg">
             {status === 'connecting' ? 'Connecting...' : status === 'connected' ? 'Listening...' : 'Connection error'}
           </p>
+
+          {/* Audio Quality Indicator */}
+          <div className="mt-4 flex items-center gap-2 text-xs text-slate-500">
+            {noiseSuppression && (
+              <span className="px-2 py-1 bg-blue-500/10 text-blue-400 rounded-full">Noise Suppression</span>
+            )}
+            {echoCancellation && (
+              <span className="px-2 py-1 bg-blue-500/10 text-blue-400 rounded-full">Echo Cancellation</span>
+            )}
+          </div>
         </div>
 
         <div className="h-24 bg-slate-800 border-t border-slate-700 flex items-center justify-center gap-6 px-8">
