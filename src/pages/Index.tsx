@@ -7,6 +7,7 @@ import { TemplatesView } from '@/components/TemplatesView';
 import { HistoryView } from '@/components/HistoryView';
 import { FeedbackView } from '@/components/FeedbackView';
 import { base64ToUint8Array, uint8ArrayToBase64, decodeAudioData, createPcmBlob } from '@/utils/audioUtils';
+import { useIsMobile } from '@/hooks/use-mobile';
 
 // --- Configuration ---
 const LIVE_MODEL = 'gemini-2.5-flash-native-audio-preview-09-2025';
@@ -272,6 +273,7 @@ const LiveSession = ({ config, initialNotebook, onEnd }: {
   initialNotebook?: NotebookState;
   onEnd: (session: SavedSession) => void;
 }) => {
+  const isMobile = useIsMobile();
   const [status, setStatus] = useState<'connecting' | 'connected' | 'error'>('connecting');
   const [volume, setVolume] = useState(0);
   const [isMuted, setIsMuted] = useState(false);
@@ -279,6 +281,7 @@ const LiveSession = ({ config, initialNotebook, onEnd }: {
   const [noiseSuppression, setNoiseSuppression] = useState(true);
   const [echoCancellation, setEchoCancellation] = useState(true);
   const [showSettings, setShowSettings] = useState(false);
+  const [showNotebook, setShowNotebook] = useState(false);
   const [notebook, setNotebook] = useState<NotebookState>(initialNotebook || {
     caseTitle: "Initializing...",
     currentPhase: "Setup",
@@ -707,74 +710,88 @@ const LiveSession = ({ config, initialNotebook, onEnd }: {
   }, [analyserRef.current, status]);
 
   return (
-    <div className="flex h-screen bg-slate-900 text-white overflow-hidden">
+    <div className="flex flex-col md:flex-row h-screen bg-slate-900 text-white overflow-hidden">
       {/* Toast Notification */}
-      <div className={`absolute top-6 left-1/2 transform -translate-x-1/2 z-50 transition-all duration-500 ${toastMessage ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-4 pointer-events-none'}`}>
-        <div className="bg-blue-600 text-white px-6 py-3 rounded-full shadow-2xl flex items-center gap-3 font-medium">
-          <span className="material-symbols-rounded">check_circle</span>
+      <div className={`fixed top-4 md:top-6 left-1/2 transform -translate-x-1/2 z-50 transition-all duration-500 ${toastMessage ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-4 pointer-events-none'}`}>
+        <div className="bg-blue-600 text-white px-4 md:px-6 py-2 md:py-3 rounded-full shadow-2xl flex items-center gap-2 md:gap-3 font-medium text-sm md:text-base">
+          <span className="material-symbols-rounded text-lg md:text-xl">check_circle</span>
           {toastMessage}
         </div>
       </div>
 
       {/* Main Live Area */}
-      <div className="flex-1 flex flex-col relative">
-        <div className="absolute top-6 left-6 z-10 flex gap-4">
-          <div className={`inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold uppercase tracking-wider ${status === 'connected' ? 'bg-red-500/20 text-red-400 border border-red-500/30' : 'bg-slate-700 text-slate-400'}`}>
-            <div className={`w-2 h-2 rounded-full ${status === 'connected' ? 'bg-red-500 animate-pulse' : 'bg-slate-500'}`}></div>
-            {status === 'connected' ? 'Live Simulation' : status}
+      <div className="flex-1 flex flex-col relative min-h-0">
+        <div className="absolute top-3 md:top-6 left-3 md:left-6 z-10 flex gap-2 md:gap-4">
+          <div className={`inline-flex items-center gap-1.5 md:gap-2 px-2 md:px-3 py-1 rounded-full text-[10px] md:text-xs font-semibold uppercase tracking-wider ${status === 'connected' ? 'bg-red-500/20 text-red-400 border border-red-500/30' : 'bg-slate-700 text-slate-400'}`}>
+            <div className={`w-1.5 md:w-2 h-1.5 md:h-2 rounded-full ${status === 'connected' ? 'bg-red-500 animate-pulse' : 'bg-slate-500'}`}></div>
+            <span className="hidden sm:inline">{status === 'connected' ? 'Live Simulation' : status}</span>
+            <span className="sm:hidden">{status === 'connected' ? 'Live' : status}</span>
           </div>
           <button
             onClick={() => setShowSettings(!showSettings)}
-            className="p-2 bg-slate-800/80 hover:bg-slate-700 border border-slate-700 rounded-lg transition-colors"
+            className="p-1.5 md:p-2 bg-slate-800/80 hover:bg-slate-700 border border-slate-700 rounded-lg transition-colors"
             title="Audio Settings"
           >
-            <span className="material-symbols-rounded text-sm">settings</span>
+            <span className="material-symbols-rounded text-sm md:text-base">settings</span>
           </button>
         </div>
 
+        {/* Mobile Notebook Toggle Button */}
+        {isMobile && (
+          <button
+            onClick={() => setShowNotebook(!showNotebook)}
+            className="absolute top-3 right-3 z-10 p-2 bg-blue-600 hover:bg-blue-500 border border-blue-500 rounded-lg transition-colors shadow-lg"
+            title="View Notebook"
+          >
+            <span className="material-symbols-rounded text-base">
+              {showNotebook ? 'close' : 'menu_book'}
+            </span>
+          </button>
+        )}
+
         {/* Audio Settings Panel */}
         {showSettings && (
-          <div className="absolute top-20 left-6 z-10 bg-slate-800 border border-slate-700 rounded-xl p-4 w-72 shadow-2xl">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="font-semibold text-white">Audio Settings</h3>
+          <div className="absolute top-14 md:top-20 left-3 md:left-6 right-3 md:right-auto z-20 bg-slate-800 border border-slate-700 rounded-xl p-3 md:p-4 w-auto md:w-72 shadow-2xl max-w-sm">
+            <div className="flex items-center justify-between mb-3 md:mb-4">
+              <h3 className="font-semibold text-white text-sm md:text-base">Audio Settings</h3>
               <button onClick={() => setShowSettings(false)}>
                 <span className="material-symbols-rounded text-slate-400 text-sm">close</span>
               </button>
             </div>
-            <div className="space-y-4">
+            <div className="space-y-3 md:space-y-4">
               <div className="flex items-center justify-between">
-                <label className="text-sm text-slate-300">Noise Suppression</label>
+                <label className="text-xs md:text-sm text-slate-300">Noise Suppression</label>
                 <button
                   onClick={() => setNoiseSuppression(!noiseSuppression)}
-                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                  className={`relative inline-flex h-5 md:h-6 w-9 md:w-11 items-center rounded-full transition-colors ${
                     noiseSuppression ? 'bg-blue-600' : 'bg-slate-600'
                   }`}
                 >
                   <span
-                    className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                      noiseSuppression ? 'translate-x-6' : 'translate-x-1'
+                    className={`inline-block h-3.5 md:h-4 w-3.5 md:w-4 transform rounded-full bg-white transition-transform ${
+                      noiseSuppression ? 'translate-x-5 md:translate-x-6' : 'translate-x-1'
                     }`}
                   />
                 </button>
               </div>
               <div className="flex items-center justify-between">
-                <label className="text-sm text-slate-300">Echo Cancellation</label>
+                <label className="text-xs md:text-sm text-slate-300">Echo Cancellation</label>
                 <button
                   onClick={() => setEchoCancellation(!echoCancellation)}
-                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                  className={`relative inline-flex h-5 md:h-6 w-9 md:w-11 items-center rounded-full transition-colors ${
                     echoCancellation ? 'bg-blue-600' : 'bg-slate-600'
                   }`}
                 >
                   <span
-                    className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                      echoCancellation ? 'translate-x-6' : 'translate-x-1'
+                    className={`inline-block h-3.5 md:h-4 w-3.5 md:w-4 transform rounded-full bg-white transition-transform ${
+                      echoCancellation ? 'translate-x-5 md:translate-x-6' : 'translate-x-1'
                     }`}
                   />
                 </button>
               </div>
               <div className="pt-2 border-t border-slate-700">
-                <p className="text-xs text-slate-400">
-                  <span className="material-symbols-rounded text-xs mr-1">info</span>
+                <p className="text-[10px] md:text-xs text-slate-400 flex items-center gap-1">
+                  <span className="material-symbols-rounded text-xs">info</span>
                   Changes require restarting the session
                 </p>
               </div>
@@ -782,181 +799,274 @@ const LiveSession = ({ config, initialNotebook, onEnd }: {
           </div>
         )}
 
-        <div className="flex-1 flex flex-col items-center justify-center relative px-8">
+        <div className="flex-1 flex flex-col items-center justify-center relative px-4 md:px-8 py-4">
           {/* Audio Visualizer */}
-          <div className="w-full max-w-3xl mb-8">
+          <div className="w-full max-w-3xl mb-4 md:mb-8">
             <canvas
               ref={canvasRef}
               width={800}
               height={200}
-              className="w-full h-32 rounded-xl bg-slate-950/50 border border-slate-800"
+              className="w-full h-20 md:h-32 rounded-xl bg-slate-950/50 border border-slate-800"
             />
           </div>
 
           {/* Mic Icon with Pulse */}
           <div className="relative">
-            <div className="w-32 h-32 rounded-full bg-blue-500/20 border-4 border-blue-500/30 flex items-center justify-center relative">
+            <div className="w-24 h-24 md:w-32 md:h-32 rounded-full bg-blue-500/20 border-2 md:border-4 border-blue-500/30 flex items-center justify-center relative">
               <div className={`absolute inset-0 rounded-full ${status === 'connected' && volume > 0.1 ? 'animate-ping' : ''} bg-blue-500/20`}></div>
-              <span className="material-symbols-rounded text-blue-400 text-5xl z-10">mic</span>
+              <span className="material-symbols-rounded text-blue-400 text-4xl md:text-5xl z-10">mic</span>
             </div>
             {/* Volume Indicator Ring */}
-            <svg className="absolute inset-0 w-32 h-32" style={{ transform: 'rotate(-90deg)' }}>
+            <svg className="absolute inset-0 w-24 h-24 md:w-32 md:h-32" style={{ transform: 'rotate(-90deg)' }}>
               <circle
-                cx="64"
-                cy="64"
-                r="60"
+                cx={isMobile ? "48" : "64"}
+                cy={isMobile ? "48" : "64"}
+                r={isMobile ? "44" : "60"}
                 stroke="currentColor"
-                strokeWidth="4"
+                strokeWidth={isMobile ? "3" : "4"}
                 fill="none"
                 className="text-blue-500/20"
               />
               <circle
-                cx="64"
-                cy="64"
-                r="60"
+                cx={isMobile ? "48" : "64"}
+                cy={isMobile ? "48" : "64"}
+                r={isMobile ? "44" : "60"}
                 stroke="currentColor"
-                strokeWidth="4"
+                strokeWidth={isMobile ? "3" : "4"}
                 fill="none"
-                strokeDasharray={`${2 * Math.PI * 60}`}
-                strokeDashoffset={`${2 * Math.PI * 60 * (1 - volume)}`}
+                strokeDasharray={`${2 * Math.PI * (isMobile ? 44 : 60)}`}
+                strokeDashoffset={`${2 * Math.PI * (isMobile ? 44 : 60) * (1 - volume)}`}
                 className="text-blue-500 transition-all duration-100"
                 strokeLinecap="round"
               />
             </svg>
           </div>
-          
-          <p className="mt-8 text-slate-400 font-light text-lg">
+
+          <p className="mt-4 md:mt-8 text-slate-400 font-light text-base md:text-lg">
             {status === 'connecting' ? 'Connecting...' : status === 'connected' ? 'Listening...' : 'Connection error'}
           </p>
 
           {/* Audio Quality Indicator */}
-          <div className="mt-4 flex items-center gap-2 text-xs text-slate-500">
+          <div className="mt-2 md:mt-4 flex flex-wrap items-center justify-center gap-1.5 md:gap-2 text-[10px] md:text-xs text-slate-500">
             {noiseSuppression && (
-              <span className="px-2 py-1 bg-blue-500/10 text-blue-400 rounded-full">Noise Suppression</span>
+              <span className="px-1.5 md:px-2 py-0.5 md:py-1 bg-blue-500/10 text-blue-400 rounded-full whitespace-nowrap">Noise Suppression</span>
             )}
             {echoCancellation && (
-              <span className="px-2 py-1 bg-blue-500/10 text-blue-400 rounded-full">Echo Cancellation</span>
+              <span className="px-1.5 md:px-2 py-0.5 md:py-1 bg-blue-500/10 text-blue-400 rounded-full whitespace-nowrap">Echo Cancellation</span>
             )}
           </div>
         </div>
 
-        <div className="h-24 bg-slate-800 border-t border-slate-700 flex items-center justify-center gap-6 px-8">
-          <div className="flex items-center gap-2 text-slate-400 text-sm">
-            <span className="material-symbols-rounded text-lg">timer</span>
+        <div className="h-auto md:h-24 bg-slate-800 border-t border-slate-700 flex flex-col md:flex-row items-center justify-center gap-3 md:gap-6 px-3 md:px-8 py-3 md:py-0">
+          {/* Timer */}
+          <div className="flex items-center gap-2 text-slate-400 text-xs md:text-sm order-1 md:order-none">
+            <span className="material-symbols-rounded text-base md:text-lg">timer</span>
             <span className="font-mono">{Math.floor(sessionDuration / 60)}:{(sessionDuration % 60).toString().padStart(2, '0')}</span>
           </div>
 
-          <div className="flex items-center gap-3 mr-4 bg-slate-900/50 px-4 py-2 rounded-xl border border-slate-700">
-            <span className="material-symbols-rounded text-slate-400 text-sm">mic</span>
-            <div className="flex flex-col w-32">
-              <div className="flex justify-between text-[10px] text-slate-500 font-medium uppercase mb-1">
-                <span>Mic Gain</span>
-                <span>{inputGain.toFixed(1)}x</span>
+          {/* Mic Gain Control - Hidden on mobile to save space */}
+          {!isMobile && (
+            <div className="flex items-center gap-3 mr-4 bg-slate-900/50 px-4 py-2 rounded-xl border border-slate-700">
+              <span className="material-symbols-rounded text-slate-400 text-sm">mic</span>
+              <div className="flex flex-col w-32">
+                <div className="flex justify-between text-[10px] text-slate-500 font-medium uppercase mb-1">
+                  <span>Mic Gain</span>
+                  <span>{inputGain.toFixed(1)}x</span>
+                </div>
+                <input
+                  type="range"
+                  min="0"
+                  max="3"
+                  step="0.1"
+                  value={inputGain}
+                  onChange={(e) => setInputGain(parseFloat(e.target.value))}
+                  className="w-full h-1 bg-slate-600 rounded-lg appearance-none cursor-pointer accent-blue-500"
+                />
               </div>
-              <input
-                type="range"
-                min="0"
-                max="3"
-                step="0.1"
-                value={inputGain}
-                onChange={(e) => setInputGain(parseFloat(e.target.value))}
-                className="w-full h-1 bg-slate-600 rounded-lg appearance-none cursor-pointer accent-blue-500"
-              />
+            </div>
+          )}
+
+          {/* Action Buttons - Responsive layout */}
+          <div className="flex items-center gap-2 md:gap-3 order-2 md:order-none">
+            <button
+              onClick={() => setIsMuted(!isMuted)}
+              className={`p-3 md:p-4 rounded-full ${isMuted ? 'bg-red-500/20 text-red-400' : 'bg-slate-700 text-white'} hover:scale-105 transition-transform`}
+              title={isMuted ? 'Unmute' : 'Mute'}
+            >
+              <span className="material-symbols-rounded text-xl md:text-2xl">{isMuted ? 'mic_off' : 'mic'}</span>
+            </button>
+
+            <button
+              onClick={handleSaveSession}
+              className="p-3 md:p-4 rounded-full bg-slate-700 text-blue-400 hover:bg-slate-600 hover:text-blue-300 hover:scale-105 transition-all"
+              title="Save Session"
+            >
+              <span className="material-symbols-rounded text-xl md:text-2xl">save</span>
+            </button>
+
+            <button
+              onClick={handleEndSession}
+              className="px-4 md:px-8 py-2 md:py-3 bg-red-600 hover:bg-red-500 rounded-full font-semibold text-white transition-colors text-sm md:text-base"
+            >
+              <span className="hidden sm:inline">End Session</span>
+              <span className="sm:hidden">End</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Right Panel: Notebook - Modal on mobile, sidebar on desktop */}
+      {/* Mobile: Full-screen overlay */}
+      {isMobile && showNotebook && (
+        <div className="fixed inset-0 bg-slate-900 z-30 flex flex-col">
+          {/* Mobile Notebook Header */}
+          <div className="p-4 border-b border-slate-700 bg-slate-800/50 backdrop-blur flex items-center justify-between">
+            <div className="flex-1 min-w-0">
+              <h3 className="text-xs font-bold text-blue-400 uppercase tracking-widest mb-1">
+                {isLegal ? 'Legal Pad' : 'Interviewer Notebook'}
+              </h3>
+              <h2 className="text-lg font-semibold text-white leading-tight truncate">{notebook.caseTitle}</h2>
+              <div className="mt-1 text-xs text-slate-400">Phase: <span className="text-white">{notebook.currentPhase}</span></div>
+            </div>
+            <button
+              onClick={() => setShowNotebook(false)}
+              className="ml-3 p-2 hover:bg-slate-700 rounded-lg transition-colors flex-shrink-0"
+            >
+              <span className="material-symbols-rounded">close</span>
+            </button>
+          </div>
+
+          {/* Mobile Notebook Content */}
+          <div className="flex-1 overflow-y-auto p-4 space-y-6">
+            {/* Case Timeline Section */}
+            <div>
+              <h4 className="flex items-center gap-2 text-sm font-semibold text-slate-300 mb-3">
+                <span className="material-symbols-rounded text-yellow-500 text-base">history_edu</span>
+                Case Timeline
+              </h4>
+              {(!notebook.caseTimeline || notebook.caseTimeline.length === 0) ? (
+                <p className="text-sm text-slate-500 italic">No events recorded yet.</p>
+              ) : (
+                <div className="relative border-l border-slate-600 ml-2 space-y-3 pl-3 py-1">
+                  {notebook.caseTimeline.map((event, i) => (
+                    <div key={i} className="relative text-sm text-slate-300">
+                      <div className="absolute -left-[17px] top-1.5 w-2 h-2 rounded-full bg-yellow-500 ring-4 ring-slate-900"></div>
+                      {event}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div>
+              <h4 className="flex items-center gap-2 text-sm font-semibold text-slate-300 mb-3">
+                <span className="material-symbols-rounded text-blue-500 text-base">
+                  {isLegal ? 'folder_open' : 'dataset'}
+                </span>
+                {isLegal ? 'Exhibits / Evidence' : 'Key Data Provided'}
+              </h4>
+              {notebook.keyData.length === 0 ? (
+                <p className="text-sm text-slate-500 italic">Empty.</p>
+              ) : (
+                <ul className="space-y-2">
+                  {notebook.keyData.map((d, i) => (
+                    <li key={i} className="text-sm text-slate-300 bg-slate-700/50 p-2 rounded border-l-2 border-blue-500">{d}</li>
+                  ))}
+                </ul>
+              )}
+            </div>
+
+            <div>
+              <h4 className="flex items-center gap-2 text-sm font-semibold text-slate-300 mb-3">
+                <span className="material-symbols-rounded text-green-500 text-base">
+                  {isLegal ? 'gavel' : 'account_tree'}
+                </span>
+                {isLegal ? 'Legal Theory / Strategy' : 'Candidate Structure'}
+              </h4>
+              {notebook.candidateFramework.length === 0 ? (
+                <p className="text-sm text-slate-500 italic">Pending...</p>
+              ) : (
+                <ul className="space-y-2">
+                  {notebook.candidateFramework.map((d, i) => (
+                    <li key={i} className="text-sm text-slate-300 bg-slate-700/50 p-2 rounded border-l-2 border-green-500">{d}</li>
+                  ))}
+                </ul>
+              )}
             </div>
           </div>
-
-          <button
-            onClick={() => setIsMuted(!isMuted)}
-            className={`p-4 rounded-full ${isMuted ? 'bg-red-500/20 text-red-400' : 'bg-slate-700 text-white'} hover:scale-105 transition-transform`}
-          >
-            <span className="material-symbols-rounded text-2xl">{isMuted ? 'mic_off' : 'mic'}</span>
-          </button>
-
-          <button
-            onClick={handleSaveSession}
-            className="p-4 rounded-full bg-slate-700 text-blue-400 hover:bg-slate-600 hover:text-blue-300 hover:scale-105 transition-all"
-            title="Save Session"
-          >
-            <span className="material-symbols-rounded text-2xl">save</span>
-          </button>
-
-          <button
-            onClick={handleEndSession}
-            className="px-8 py-3 bg-red-600 hover:bg-red-500 rounded-full font-semibold text-white transition-colors"
-          >
-            End Session
-          </button>
         </div>
-      </div>
+      )}
 
-      {/* Right Panel: Notebook */}
-      <div className="w-96 bg-slate-800 border-l border-slate-700 flex flex-col shadow-2xl z-20">
-        <div className="p-6 border-b border-slate-700 bg-slate-800/50 backdrop-blur">
-          <h3 className="text-xs font-bold text-blue-400 uppercase tracking-widest mb-1">
-            {isLegal ? 'Legal Pad' : 'Interviewer Notebook'}
-          </h3>
-          <h2 className="text-xl font-semibold text-white leading-tight">{notebook.caseTitle}</h2>
-          <div className="mt-2 text-sm text-slate-400">Phase: <span className="text-white">{notebook.currentPhase}</span></div>
-        </div>
-
-        <div className="flex-1 overflow-y-auto p-6 space-y-8">
-          {/* Case Timeline Section */}
-          <div>
-            <h4 className="flex items-center gap-2 text-sm font-semibold text-slate-300 mb-3">
-              <span className="material-symbols-rounded text-yellow-500 text-lg">history_edu</span>
-              Case Timeline
-            </h4>
-            {(!notebook.caseTimeline || notebook.caseTimeline.length === 0) ? (
-              <p className="text-sm text-slate-500 italic">No events recorded yet.</p>
-            ) : (
-              <div className="relative border-l border-slate-600 ml-2 space-y-4 pl-4 py-1">
-                {notebook.caseTimeline.map((event, i) => (
-                  <div key={i} className="relative text-sm text-slate-300">
-                    <div className="absolute -left-[21px] top-1.5 w-2.5 h-2.5 rounded-full bg-yellow-500 ring-4 ring-slate-800"></div>
-                    {event}
-                  </div>
-                ))}
-              </div>
-            )}
+      {/* Desktop: Sidebar */}
+      {!isMobile && (
+        <div className="w-96 bg-slate-800 border-l border-slate-700 flex flex-col shadow-2xl z-20">
+          <div className="p-6 border-b border-slate-700 bg-slate-800/50 backdrop-blur">
+            <h3 className="text-xs font-bold text-blue-400 uppercase tracking-widest mb-1">
+              {isLegal ? 'Legal Pad' : 'Interviewer Notebook'}
+            </h3>
+            <h2 className="text-xl font-semibold text-white leading-tight">{notebook.caseTitle}</h2>
+            <div className="mt-2 text-sm text-slate-400">Phase: <span className="text-white">{notebook.currentPhase}</span></div>
           </div>
 
-          <div>
-            <h4 className="flex items-center gap-2 text-sm font-semibold text-slate-300 mb-3">
-              <span className="material-symbols-rounded text-blue-500 text-lg">
-                {isLegal ? 'folder_open' : 'dataset'}
-              </span>
-              {isLegal ? 'Exhibits / Evidence' : 'Key Data Provided'}
-            </h4>
-            {notebook.keyData.length === 0 ? (
-              <p className="text-sm text-slate-500 italic">Empty.</p>
-            ) : (
-              <ul className="space-y-2">
-                {notebook.keyData.map((d, i) => (
-                  <li key={i} className="text-sm text-slate-300 bg-slate-700/50 p-2 rounded border-l-2 border-blue-500">{d}</li>
-                ))}
-              </ul>
-            )}
-          </div>
+          <div className="flex-1 overflow-y-auto p-6 space-y-8">
+            {/* Case Timeline Section */}
+            <div>
+              <h4 className="flex items-center gap-2 text-sm font-semibold text-slate-300 mb-3">
+                <span className="material-symbols-rounded text-yellow-500 text-lg">history_edu</span>
+                Case Timeline
+              </h4>
+              {(!notebook.caseTimeline || notebook.caseTimeline.length === 0) ? (
+                <p className="text-sm text-slate-500 italic">No events recorded yet.</p>
+              ) : (
+                <div className="relative border-l border-slate-600 ml-2 space-y-4 pl-4 py-1">
+                  {notebook.caseTimeline.map((event, i) => (
+                    <div key={i} className="relative text-sm text-slate-300">
+                      <div className="absolute -left-[21px] top-1.5 w-2.5 h-2.5 rounded-full bg-yellow-500 ring-4 ring-slate-800"></div>
+                      {event}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
 
-          <div>
-            <h4 className="flex items-center gap-2 text-sm font-semibold text-slate-300 mb-3">
-              <span className="material-symbols-rounded text-green-500 text-lg">
-                {isLegal ? 'gavel' : 'account_tree'}
-              </span>
-              {isLegal ? 'Legal Theory / Strategy' : 'Candidate Structure'}
-            </h4>
-            {notebook.candidateFramework.length === 0 ? (
-              <p className="text-sm text-slate-500 italic">Pending...</p>
-            ) : (
-              <ul className="space-y-2">
-                {notebook.candidateFramework.map((d, i) => (
-                  <li key={i} className="text-sm text-slate-300 bg-slate-700/50 p-2 rounded border-l-2 border-green-500">{d}</li>
-                ))}
-              </ul>
-            )}
+            <div>
+              <h4 className="flex items-center gap-2 text-sm font-semibold text-slate-300 mb-3">
+                <span className="material-symbols-rounded text-blue-500 text-lg">
+                  {isLegal ? 'folder_open' : 'dataset'}
+                </span>
+                {isLegal ? 'Exhibits / Evidence' : 'Key Data Provided'}
+              </h4>
+              {notebook.keyData.length === 0 ? (
+                <p className="text-sm text-slate-500 italic">Empty.</p>
+              ) : (
+                <ul className="space-y-2">
+                  {notebook.keyData.map((d, i) => (
+                    <li key={i} className="text-sm text-slate-300 bg-slate-700/50 p-2 rounded border-l-2 border-blue-500">{d}</li>
+                  ))}
+                </ul>
+              )}
+            </div>
+
+            <div>
+              <h4 className="flex items-center gap-2 text-sm font-semibold text-slate-300 mb-3">
+                <span className="material-symbols-rounded text-green-500 text-lg">
+                  {isLegal ? 'gavel' : 'account_tree'}
+                </span>
+                {isLegal ? 'Legal Theory / Strategy' : 'Candidate Structure'}
+              </h4>
+              {notebook.candidateFramework.length === 0 ? (
+                <p className="text-sm text-slate-500 italic">Pending...</p>
+              ) : (
+                <ul className="space-y-2">
+                  {notebook.candidateFramework.map((d, i) => (
+                    <li key={i} className="text-sm text-slate-300 bg-slate-700/50 p-2 rounded border-l-2 border-green-500">{d}</li>
+                  ))}
+                </ul>
+              )}
+            </div>
           </div>
         </div>
-      </div>
+      )}
     </div>
   );
 };
