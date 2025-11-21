@@ -1,4 +1,4 @@
-export type ViewState = 'landing' | 'setup' | 'live-interview' | 'text-interview' | 'feedback' | 'history' | 'templates';
+export type ViewState = 'auth' | 'landing' | 'setup' | 'live-interview' | 'text-interview' | 'feedback' | 'history' | 'templates' | 'cases' | 'case-detail';
 
 export interface CaseConfig {
   type: string;
