@@ -2,6 +2,10 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { GoogleGenAI, LiveServerMessage, Modality, Type } from "@google/genai";
 import { ViewState, CaseConfig, Message, NotebookState, SavedSession, TranscriptEntry, FeedbackReport } from '@/types';
 import { saveSession as saveSessionToStorage, getLastSession } from '@/utils/storage';
+import { supabase } from '@/integrations/supabase/client';
+import { Auth } from '@/components/Auth';
+import { CaseManager } from '@/components/CaseManager';
+import { CaseView } from '@/components/CaseView';
 import { Timer } from '@/components/Timer';
 import { TemplatesView } from '@/components/TemplatesView';
 import { HistoryView } from '@/components/HistoryView';
@@ -39,10 +43,12 @@ const AudioContextClass = (window.AudioContext || (window as any).webkitAudioCon
 // --- Components ---
 
 // 1. Landing Component
-const Landing = ({ onStart, onViewHistory, onViewTemplates }: {
+const Landing = ({ onStart, onViewHistory, onViewTemplates, onViewCases, onSignOut }: {
   onStart: () => void;
   onViewHistory: () => void;
   onViewTemplates: () => void;
+  onViewCases: () => void;
+  onSignOut: () => void;
 }) => {
   const [showInstructions, setShowInstructions] = useState(false);
 
@@ -59,6 +65,14 @@ const Landing = ({ onStart, onViewHistory, onViewTemplates }: {
           <span className="font-medium">How to Use</span>
         </button>
         <button
+          onClick={onViewCases}
+          className="px-3 py-2 sm:px-4 sm:py-2 bg-blue-600 hover:bg-blue-500 border border-blue-500 rounded-lg flex items-center gap-2 transition-colors text-sm sm:text-base shadow-lg"
+        >
+          <span className="material-symbols-rounded text-base sm:text-lg">folder</span>
+          <span className="font-medium hidden sm:inline">My Cases</span>
+          <span className="font-medium sm:hidden">Cases</span>
+        </button>
+        <button
           onClick={onViewTemplates}
           className="px-3 py-2 sm:px-4 sm:py-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg flex items-center gap-2 transition-colors text-sm sm:text-base"
         >
@@ -72,6 +86,12 @@ const Landing = ({ onStart, onViewHistory, onViewTemplates }: {
         >
           <span className="material-symbols-rounded text-base sm:text-lg">history</span>
           <span className="font-medium hidden sm:inline">History</span>
+        </button>
+        <button
+          onClick={onSignOut}
+          className="px-3 py-2 sm:px-4 sm:py-2 bg-red-600 hover:bg-red-500 border border-red-500 rounded-lg flex items-center gap-2 transition-colors text-sm sm:text-base"
+        >
+          <span className="material-symbols-rounded text-base sm:text-lg">logout</span>
         </button>
       </div>
 
@@ -268,10 +288,12 @@ const Setup = ({ onConfigComplete, onLoadSession, onBack, onViewTemplates }: {
 };
 
 // 3. Live Interface (Using working implementation)
-const LiveSession = ({ config, initialNotebook, onEnd }: {
+const LiveSession = ({ config, initialNotebook, onEnd, caseId, caseContext }: {
   config: CaseConfig;
   initialNotebook?: NotebookState;
   onEnd: (session: SavedSession) => void;
+  caseId?: string;
+  caseContext?: any;
 }) => {
   const isMobile = useIsMobile();
   const [status, setStatus] = useState<'connecting' | 'connected' | 'error'>('connecting');
@@ -366,7 +388,7 @@ const LiveSession = ({ config, initialNotebook, onEnd }: {
     nextStartTimeRef.current = 0;
   }, []);
 
-  const handleEndSession = () => {
+  const handleEndSession = async () => {
     stopSession();
     const session: SavedSession = {
       id: Date.now().toString(),
@@ -377,10 +399,24 @@ const LiveSession = ({ config, initialNotebook, onEnd }: {
       transcript
     };
     saveSessionToStorage(session);
+
+    // Save to database if user is authenticated and case is selected
+    const { data: { user } } = await supabase.auth.getUser();
+    if (user && caseId) {
+      await supabase.from('sessions').insert({
+        case_id: caseId,
+        user_id: user.id,
+        session_type: 'live-interview',
+        duration: sessionDuration,
+        notebook: notebook,
+        transcript: session.transcript,
+      });
+    }
+
     onEnd(session);
   };
 
-  const handleSaveSession = () => {
+  const handleSaveSession = async () => {
     const session: SavedSession = {
       id: Date.now().toString(),
       config,
@@ -390,6 +426,20 @@ const LiveSession = ({ config, initialNotebook, onEnd }: {
       transcript
     };
     saveSessionToStorage(session);
+
+    // Save to database if user is authenticated and case is selected
+    const { data: { user } } = await supabase.auth.getUser();
+    if (user && caseId) {
+      await supabase.from('sessions').insert({
+        case_id: caseId,
+        user_id: user.id,
+        session_type: 'live-interview',
+        duration: sessionDuration,
+        notebook: notebook,
+        transcript: session.transcript,
+      });
+    }
+
     showToast("Session Saved Successfully");
   };
 
@@ -1093,13 +1143,46 @@ const TextSession = ({ config, onEnd }: { config: CaseConfig, onEnd: () => void 
 
 // 5. App Main Container
 const CaseBuddyApp = () => {
-  const [view, setView] = useState<ViewState>('landing');
+  const [view, setView] = useState<ViewState>('auth');
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [config, setConfig] = useState<CaseConfig>({ type: '', industry: '', difficulty: '' });
   const [initialNotebook, setInitialNotebook] = useState<NotebookState | undefined>(undefined);
   const [completedSession, setCompletedSession] = useState<SavedSession | null>(null);
+  const [selectedCaseId, setSelectedCaseId] = useState<string | undefined>(undefined);
+  const [selectedCaseData, setSelectedCaseData] = useState<any>(undefined);
+  const [caseContext, setCaseContext] = useState<any>(undefined);
+
+  useEffect(() => {
+    // Check if user is already authenticated
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session) {
+        setIsAuthenticated(true);
+        setView('landing');
+      }
+    });
+
+    // Listen for auth changes
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      setIsAuthenticated(!!session);
+      if (session && view === 'auth') {
+        setView('landing');
+      } else if (!session) {
+        setView('auth');
+      }
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  const handleSignOut = async () => {
+    await supabase.auth.signOut();
+    setView('auth');
+  };
 
   const startSetup = () => {
     setInitialNotebook(undefined);
+    setSelectedCaseId(undefined);
+    setCaseContext(undefined);
     setView('setup');
   };
 
@@ -1129,14 +1212,48 @@ const CaseBuddyApp = () => {
     setView('landing');
   };
 
+  const handleSelectCase = (caseId: string, caseData: any) => {
+    setSelectedCaseId(caseId);
+    setSelectedCaseData(caseData);
+    setView('case-detail');
+  };
+
+  const handleStartCaseSession = (context: any) => {
+    setCaseContext(context);
+    setConfig({
+      type: context.caseType,
+      industry: context.industry || 'Technology',
+      difficulty: 'Intermediate',
+    });
+    setView('live-interview');
+  };
+
   return (
     <div className="antialiased">
+      {view === 'auth' && <Auth onSuccess={() => setView('landing')} />}
       {view === 'landing' && (
         <Landing
           onStart={startSetup}
           onViewHistory={() => setView('history')}
           onViewTemplates={() => setView('templates')}
+          onViewCases={() => setView('cases')}
+          onSignOut={handleSignOut}
         />
+      )}
+      {view === 'cases' && (
+        <div className="min-h-screen bg-slate-900 text-white p-6">
+          <CaseManager onSelectCase={handleSelectCase} />
+        </div>
+      )}
+      {view === 'case-detail' && selectedCaseId && selectedCaseData && (
+        <div className="min-h-screen bg-slate-900 text-white p-6">
+          <CaseView
+            caseId={selectedCaseId}
+            caseData={selectedCaseData}
+            onBack={() => setView('cases')}
+            onStartSession={handleStartCaseSession}
+          />
+        </div>
       )}
       {view === 'setup' && (
         <Setup
@@ -1151,6 +1268,8 @@ const CaseBuddyApp = () => {
           config={config}
           initialNotebook={initialNotebook}
           onEnd={handleEndLiveSession}
+          caseId={selectedCaseId}
+          caseContext={caseContext}
         />
       )}
       {view === 'text-interview' && <TextSession config={config} onEnd={handleEnd} />}
