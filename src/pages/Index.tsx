@@ -3,6 +3,7 @@ import { GoogleGenAI, LiveServerMessage, Modality, Type } from "@google/genai";
 import { ViewState, CaseConfig, Message, NotebookState, SavedSession, TranscriptEntry, FeedbackReport } from '@/types';
 import { saveSession as saveSessionToStorage, getLastSession } from '@/utils/storage';
 import { supabase } from '@/integrations/supabase/client';
+import type { TablesInsert } from '@/integrations/supabase/types';
 import { Auth } from '@/components/Auth';
 import { CaseManager } from '@/components/CaseManager';
 import { CaseView } from '@/components/CaseView';
@@ -403,14 +404,15 @@ const LiveSession = ({ config, initialNotebook, onEnd, caseId, caseContext }: {
     // Save to database if user is authenticated and case is selected
     const { data: { user } } = await supabase.auth.getUser();
     if (user && caseId) {
-      await supabase.from('sessions').insert({
+      const sessionData: TablesInsert<'sessions'> = {
         case_id: caseId,
         user_id: user.id,
         session_type: 'live-interview',
         duration: sessionDuration,
-        notebook: notebook,
-        transcript: session.transcript,
-      });
+        notebook: notebook as any,
+        transcript: session.transcript as any,
+      };
+      await supabase.from('sessions').insert(sessionData);
     }
 
     onEnd(session);
@@ -430,14 +432,15 @@ const LiveSession = ({ config, initialNotebook, onEnd, caseId, caseContext }: {
     // Save to database if user is authenticated and case is selected
     const { data: { user } } = await supabase.auth.getUser();
     if (user && caseId) {
-      await supabase.from('sessions').insert({
+      const sessionData: TablesInsert<'sessions'> = {
         case_id: caseId,
         user_id: user.id,
         session_type: 'live-interview',
         duration: sessionDuration,
-        notebook: notebook,
-        transcript: session.transcript,
-      });
+        notebook: notebook as any,
+        transcript: session.transcript as any,
+      };
+      await supabase.from('sessions').insert(sessionData);
     }
 
     showToast("Session Saved Successfully");
