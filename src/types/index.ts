@@ -18,6 +18,7 @@ export interface NotebookState {
   keyData: string[];
   candidateFramework: string[];
   caseTimeline: string[];
+  trialNotes: string[];
 }
 
 export interface SavedSession {
