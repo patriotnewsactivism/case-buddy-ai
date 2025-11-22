@@ -310,7 +310,8 @@ const LiveSession = ({ config, initialNotebook, onEnd, caseId, caseContext }: {
     currentPhase: "Setup",
     keyData: [],
     candidateFramework: [],
-    caseTimeline: []
+    caseTimeline: [],
+    trialNotes: []
   });
   const [sessionDuration, setSessionDuration] = useState(0);
   const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
@@ -346,6 +347,26 @@ const LiveSession = ({ config, initialNotebook, onEnd, caseId, caseContext }: {
   const showToast = (msg: string) => {
     setToastMessage(msg);
     setTimeout(() => setToastMessage(null), 3000);
+  };
+
+  // Trial Notes management
+  const [currentNote, setCurrentNote] = useState('');
+
+  const addTrialNote = () => {
+    if (currentNote.trim()) {
+      setNotebook(prev => ({
+        ...prev,
+        trialNotes: [...prev.trialNotes, currentNote.trim()]
+      }));
+      setCurrentNote('');
+    }
+  };
+
+  const removeTrialNote = (index: number) => {
+    setNotebook(prev => ({
+      ...prev,
+      trialNotes: prev.trialNotes.filter((_, i) => i !== index)
+    }));
   };
 
   const stopSession = useCallback(() => {
@@ -1046,6 +1067,57 @@ const LiveSession = ({ config, initialNotebook, onEnd, caseId, caseContext }: {
                 </ul>
               )}
             </div>
+
+            {/* Trial Notes Section */}
+            <div>
+              <h4 className="flex items-center gap-2 text-sm font-semibold text-slate-300 mb-3">
+                <span className="material-symbols-rounded text-purple-500 text-base">sticky_note</span>
+                Trial Notes & Questions
+              </h4>
+
+              {/* Add Note Input */}
+              <div className="mb-3">
+                <textarea
+                  value={currentNote}
+                  onChange={(e) => setCurrentNote(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && e.ctrlKey) {
+                      addTrialNote();
+                    }
+                  }}
+                  placeholder="Enter a note or question to display during trial..."
+                  className="w-full bg-slate-700/50 border border-slate-600 rounded p-2 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-purple-500 resize-none"
+                  rows={2}
+                />
+                <button
+                  onClick={addTrialNote}
+                  className="mt-2 px-3 py-1.5 bg-purple-600 hover:bg-purple-500 text-white text-xs font-medium rounded transition-colors flex items-center gap-1"
+                >
+                  <span className="material-symbols-rounded text-sm">add</span>
+                  Add Note
+                </button>
+              </div>
+
+              {/* Notes List */}
+              {notebook.trialNotes.length === 0 ? (
+                <p className="text-sm text-slate-500 italic">No notes yet. Add notes or questions to keep on screen during the trial.</p>
+              ) : (
+                <ul className="space-y-2">
+                  {notebook.trialNotes.map((note, i) => (
+                    <li key={i} className="text-sm text-slate-300 bg-slate-700/50 p-2 rounded border-l-2 border-purple-500 flex justify-between items-start gap-2">
+                      <span className="flex-1">{note}</span>
+                      <button
+                        onClick={() => removeTrialNote(i)}
+                        className="text-slate-400 hover:text-red-400 transition-colors flex-shrink-0"
+                        title="Remove note"
+                      >
+                        <span className="material-symbols-rounded text-base">close</span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
           </div>
         </div>
       )}
@@ -1113,6 +1185,57 @@ const LiveSession = ({ config, initialNotebook, onEnd, caseId, caseContext }: {
                 <ul className="space-y-2">
                   {notebook.candidateFramework.map((d, i) => (
                     <li key={i} className="text-sm text-slate-300 bg-slate-700/50 p-2 rounded border-l-2 border-green-500">{d}</li>
+                  ))}
+                </ul>
+              )}
+            </div>
+
+            {/* Trial Notes Section */}
+            <div>
+              <h4 className="flex items-center gap-2 text-sm font-semibold text-slate-300 mb-3">
+                <span className="material-symbols-rounded text-purple-500 text-lg">sticky_note</span>
+                Trial Notes & Questions
+              </h4>
+
+              {/* Add Note Input */}
+              <div className="mb-3">
+                <textarea
+                  value={currentNote}
+                  onChange={(e) => setCurrentNote(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && e.ctrlKey) {
+                      addTrialNote();
+                    }
+                  }}
+                  placeholder="Enter a note or question to display during trial..."
+                  className="w-full bg-slate-700/50 border border-slate-600 rounded p-2 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-purple-500 resize-none"
+                  rows={3}
+                />
+                <button
+                  onClick={addTrialNote}
+                  className="mt-2 px-3 py-1.5 bg-purple-600 hover:bg-purple-500 text-white text-xs font-medium rounded transition-colors flex items-center gap-1"
+                >
+                  <span className="material-symbols-rounded text-sm">add</span>
+                  Add Note
+                </button>
+              </div>
+
+              {/* Notes List */}
+              {notebook.trialNotes.length === 0 ? (
+                <p className="text-sm text-slate-500 italic">No notes yet. Add notes or questions to keep on screen during the trial.</p>
+              ) : (
+                <ul className="space-y-2">
+                  {notebook.trialNotes.map((note, i) => (
+                    <li key={i} className="text-sm text-slate-300 bg-slate-700/50 p-2 rounded border-l-2 border-purple-500 flex justify-between items-start gap-2">
+                      <span className="flex-1">{note}</span>
+                      <button
+                        onClick={() => removeTrialNote(i)}
+                        className="text-slate-400 hover:text-red-400 transition-colors flex-shrink-0"
+                        title="Remove note"
+                      >
+                        <span className="material-symbols-rounded text-base">close</span>
+                      </button>
+                    </li>
                   ))}
                 </ul>
               )}
