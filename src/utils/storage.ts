@@ -1,4 +1,4 @@
-import { Case, TrialSession, TrialSessionMetrics, TrialSessionTranscriptEntry } from '../types';
+import { Case, TrialSession, TrialSessionMetrics, TrialSessionTranscriptEntry, SavedSession } from '../types';
 
 const STORAGE_KEYS = {
   CASES: 'lexsim_cases',
@@ -330,6 +330,62 @@ export const clearAllData = (): boolean => {
     // Silent fail - return false indicates failure
     return false;
   }
+};
+
+// Saved Sessions (practice/mock trial sessions)
+const SAVED_SESSIONS_KEY = 'casebuddy_saved_sessions';
+
+export const getAllSessions = (): SavedSession[] => {
+  if (!isLocalStorageAvailable()) return [];
+  try {
+    const data = localStorage.getItem(SAVED_SESSIONS_KEY);
+    if (!data) return [];
+    const parsed = JSON.parse(data);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (e) {
+    return [];
+  }
+};
+
+export const saveSession = (session: SavedSession): boolean => {
+  if (!isLocalStorageAvailable()) return false;
+  try {
+    const sessions = getAllSessions().filter(s => s.id !== session.id);
+    sessions.unshift(session);
+    localStorage.setItem(SAVED_SESSIONS_KEY, JSON.stringify(sessions.slice(0, 100)));
+    return true;
+  } catch (e) {
+    return false;
+  }
+};
+
+export const deleteSession = (sessionId: string): boolean => {
+  if (!isLocalStorageAvailable()) return false;
+  try {
+    const sessions = getAllSessions().filter(s => s.id !== sessionId);
+    localStorage.setItem(SAVED_SESSIONS_KEY, JSON.stringify(sessions));
+    return true;
+  } catch (e) {
+    return false;
+  }
+};
+
+export const getLastSession = (): SavedSession | null => {
+  const sessions = getAllSessions();
+  return sessions.length > 0 ? sessions[0] : null;
+};
+
+export const exportSessionAsJSON = (session: SavedSession): void => {
+  const json = JSON.stringify(session, null, 2);
+  const blob = new Blob([json], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `session_${session.id}_${new Date(session.date).toISOString().slice(0, 10)}.json`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 };
 
 // Check storage usage

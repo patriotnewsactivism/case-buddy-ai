@@ -39,6 +39,21 @@ export async function decodeAudioData(
   return buffer;
 }
 
+export function formatTime(seconds: number): string {
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
+export function processMediaFile(
+  file: File,
+  skipConversion: boolean,
+  onProgress?: (progress: number) => void
+): Promise<File> {
+  onProgress?.(100);
+  return Promise.resolve(file);
+}
+
 export function createPcmBlob(data: Float32Array): Blob {
   const l = data.length;
   const int16 = new Int16Array(l);

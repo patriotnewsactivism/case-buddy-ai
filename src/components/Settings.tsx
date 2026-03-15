@@ -1,6 +1,6 @@
 import React, { useState, useContext, useEffect } from 'react';
 import { AppContext } from '../App';
-import { Settings as SettingsIcon, Key, Database, Download, Upload, AlertCircle, Check, User, Moon, Sun, Palette, Shield, Info, Trash2, CheckCircle, Cloud, Loader2, ClosedCaption, Volume2, Play, FileText, Zap, DollarSign } from 'lucide-react';
+import { Settings as SettingsIcon, Key, Database, Download, Upload, AlertCircle, Check, User, Moon, Sun, Palette, Shield, Info, Trash2, CheckCircle, Cloud, Loader2, Captions, Volume2, Play, FileText, Zap, DollarSign } from 'lucide-react';
 import { exportAllData, importAllData, clearAllData, getStorageInfo, savePreferences, loadPreferences } from '../utils/storage';
 import { getSupabaseClient } from '../services/supabaseClient';
 import { supabaseReady } from '../services/dataService';
@@ -305,7 +305,7 @@ const Settings = () => {
       {/* Caption Settings */}
       <div className="bg-slate-800 border border-slate-700 rounded-xl p-6">
         <div className="flex items-center gap-3 mb-4">
-          <ClosedCaption className="text-gold-500" size={24} />
+          <Captions className="text-gold-500" size={24} />
           <h2 className="text-xl font-semibold text-white">Caption Settings</h2>
         </div>
 

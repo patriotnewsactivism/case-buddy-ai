@@ -963,4 +963,5 @@ const CaseManager = ({ initialAnalysisResult }: { initialAnalysisResult?: any })
   );
 };
 
+export { CaseManager };
 export default CaseManager;
