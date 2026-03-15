@@ -42,9 +42,12 @@ export const Auth = ({ onSuccess }: { onSuccess: () => void }) => {
         onSuccess();
       }
     } catch (error: any) {
+      const message = error.message === 'Failed to fetch'
+        ? 'Unable to connect to the server. Please check your internet connection and try again.'
+        : error.message;
       toast({
         title: 'Error',
-        description: error.message,
+        description: message,
         variant: 'destructive',
       });
     } finally {
