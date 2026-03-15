@@ -1189,3 +1189,70 @@ export interface TranscriptionRouterResult {
   correctedText?: string;
   corrections?: Array<{ original: string; corrected: string }>;
 }
+
+export type ViewState = 'auth' | 'landing' | 'setup' | 'live-interview' | 'text-interview' | 'feedback' | 'history' | 'templates' | 'cases' | 'case-detail';
+
+export interface CaseConfig {
+  type: string;
+  industry: string;
+  difficulty: string;
+}
+
+export interface Message {
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+  timestamp?: number;
+}
+
+export interface NotebookState {
+  caseTitle: string;
+  currentPhase: string;
+  keyData: string[];
+  candidateFramework: string[];
+  caseTimeline: string[];
+  trialNotes: string[];
+  [key: string]: unknown;
+}
+
+export interface TranscriptEntry {
+  speaker: 'user' | 'interviewer' | 'system';
+  text: string;
+  timestamp?: number;
+}
+
+export interface FeedbackReport {
+  overallScore: number;
+  strengths: string[];
+  improvements: string[];
+  summary?: string;
+  [key: string]: unknown;
+}
+
+export interface SavedSessionConfig {
+  type: string;
+  industry: string;
+  difficulty: string;
+}
+
+export interface SavedSessionNotebook {
+  caseTitle: string;
+  caseTimeline: string[];
+  [key: string]: unknown;
+}
+
+export interface SavedSessionFeedback {
+  overallScore: number;
+  strengths: string[];
+  improvements: string[];
+  [key: string]: unknown;
+}
+
+export interface SavedSession {
+  id: string;
+  date: number;
+  duration: number;
+  config: SavedSessionConfig;
+  notebook: SavedSessionNotebook;
+  feedback?: SavedSessionFeedback;
+  [key: string]: unknown;
+}
