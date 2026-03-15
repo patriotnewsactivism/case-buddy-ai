@@ -1,218 +1,966 @@
-import { useState, useEffect } from 'react';
-import { supabase } from '@/integrations/supabase/client';
-import { Button } from '@/components/ui/button';
-import { Card } from '@/components/ui/card';
-import { Input } from '@/components/ui/input';
-import { Textarea } from '@/components/ui/textarea';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
-import { useToast } from '@/hooks/use-toast';
-import { Plus, FolderOpen, FileText } from 'lucide-react';
 
-interface Case {
-  id: string;
-  title: string;
-  case_type: string;
-  industry: string;
-  difficulty: string;
-  description: string;
-  status: string;
-  created_at: string;
-}
+import React, { useContext, useState } from 'react';
+import { AppContext } from '../App';
+import { useAuth } from '../contexts/AuthContext';
+import { Case, CaseStatus, CaseTask, DocumentType, EvidenceItem, PriorityLevel, TaskStatus } from '../types';
+import { FileText, Upload, Eye, AlertTriangle, CheckCircle, Search, BrainCircuit, Plus, X, BookOpen, Library, Save, Clock, Tag, ListChecks, File, Loader2 } from 'lucide-react';
+import { analyzeDocument, fileToGenerativePart, analyzePDFDocument, batchAnalyzeDocuments } from '../services/geminiService';
+import { processDocument, toEvidenceItem, saveTimelineEvents, ProcessedDocument } from '../services/documentProcessingService';
+import { MOCK_CASE_TEMPLATES } from '../constants';
+import { handleError, handleSuccess, getErrorMessage } from '../utils/errorHandler';
+import { validateFile } from '../utils/fileValidation';
 
-export const CaseManager = ({ onSelectCase }: { onSelectCase: (caseId: string, caseData: Case) => void }) => {
-  const [cases, setCases] = useState<Case[]>([]);
-  const [isCreating, setIsCreating] = useState(false);
-  const [newCase, setNewCase] = useState({
+import { ToastContainer, toast } from 'react-toastify';
+import { generateRealisticCase } from '../services/caseGenerationService';
+
+const CaseManager = ({ initialAnalysisResult }: { initialAnalysisResult?: any }) => {
+  const { cases, activeCase, setActiveCase, addCase, addEvidence, updateCase } = useContext(AppContext);
+  const { user, updateUsage } = useAuth();
+  const [analyzing, setAnalyzing] = useState(false);
+  const [generating, setGenerating] = useState(false);
+  const [analysisResult, setAnalysisResult] = useState<any>(initialAnalysisResult || null);
+  const [inputText, setInputText] = useState('');
+  
+  const [showNewCaseModal, setShowNewCaseModal] = useState(false);
+  const [showLibraryModal, setShowLibraryModal] = useState(false);
+  const [showAiGenModal, setShowAiGenModal] = useState(false);
+  const [aiGenPrompt, setAiGenPrompt] = useState('');
+  
+  const [newCaseData, setNewCaseData] = useState<Partial<Case>>({
     title: '',
-    case_type: 'profitability',
-    industry: '',
-    difficulty: 'medium',
-    description: '',
+    client: '',
+    opposingCounsel: '',
+    judge: '',
+    summary: ''
   });
-  const { toast } = useToast();
 
-  useEffect(() => {
-    loadCases();
-  }, []);
-
-  const loadCases = async () => {
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return;
-
-    const { data, error } = await supabase
-      .from('cases')
-      .select('*')
-      .eq('user_id', user.id)
-      .order('created_at', { ascending: false });
-
-    if (error) {
-      toast({
-        title: 'Error loading cases',
-        description: error.message,
-        variant: 'destructive',
-      });
-    } else {
-      setCases(data || []);
-    }
-  };
-
-  const createCase = async () => {
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) {
-      toast({
-        title: 'Authentication required',
-        description: 'Please sign in to create cases',
-        variant: 'destructive',
-      });
+  const handleAiGenerate = async () => {
+    if (!aiGenPrompt.trim()) return;
+    
+    if (user?.plan === 'free' && cases.length >= 1) {
+      toast.error('Free plan is limited to 1 case. Please upgrade to Pro for unlimited cases.');
       return;
     }
 
-    const { data, error } = await supabase
-      .from('cases')
-      .insert({
-        ...newCase,
-        user_id: user.id,
-      })
-      .select()
-      .single();
+    setGenerating(true);
+    try {
+      const generated = await generateRealisticCase(aiGenPrompt);
+      const newCase: Case = {
+        id: crypto.randomUUID(),
+        title: generated.title || 'Untitled Case',
+        client: generated.client || 'Unknown',
+        status: CaseStatus.PRE_TRIAL,
+        opposingCounsel: generated.opposingCounsel || 'Unknown',
+        judge: generated.judge || 'Unknown',
+        nextCourtDate: 'TBD',
+        summary: generated.summary || '',
+        winProbability: 50,
+        evidence: [],
+        tasks: [],
+        docketNumber: generated.docketNumber,
+        courtLocation: generated.courtLocation,
+        jurisdiction: generated.jurisdiction,
+        clientType: generated.clientType as any,
+        opposingParty: generated.opposingParty,
+        legalTheory: generated.legalTheory,
+        keyIssues: generated.keyIssues
+      };
+      await addCase(newCase);
+      if (user?.plan === 'free') {
+        void updateUsage({ cases_created: (user.usage?.cases_created || 0) + 1 });
+      }
+      handleSuccess(`Realistic case "${newCase.title}" generated by AI`);
+      setShowAiGenModal(false);
+      setAiGenPrompt('');
+    } catch (err) {
+      handleError(err, 'Failed to generate case with AI', 'CaseManager');
+    } finally {
+      setGenerating(false);
+    }
+  };
+  const [evidenceTitle, setEvidenceTitle] = useState('');
+  const [evidenceNotes, setEvidenceNotes] = useState('');
+  const [lastUploadName, setLastUploadName] = useState<string | null>(null);
+  const [batchUploadProgress, setBatchUploadProgress] = useState<{ current: number; total: number; fileName: string } | null>(null);
+  const caseEvidence = activeCase?.evidence || [];
+  const caseTasks = activeCase?.tasks || [];
+  const [taskTitle, setTaskTitle] = useState('');
+  const [taskPriority, setTaskPriority] = useState<PriorityLevel>('medium');
+  const [taskDue, setTaskDue] = useState('');
 
-    if (error) {
-      toast({
-        title: 'Error creating case',
-        description: error.message,
-        variant: 'destructive',
-      });
-    } else {
-      toast({
-        title: 'Case created',
-        description: 'Your case has been created successfully',
-      });
-      setCases([data, ...cases]);
-      setIsCreating(false);
-      setNewCase({
-        title: '',
-        case_type: 'profitability',
-        industry: '',
-        difficulty: 'medium',
-        description: '',
-      });
+  const handleAnalyze = async () => {
+    if (!inputText.trim()) {
+      handleError(new Error('Empty input'), 'Please enter text to analyze', 'CaseManager');
+      return;
+    }
+    setLastUploadName(null);
+    setEvidenceTitle(inputText.trim().slice(0, 60) || 'Text analysis');
+    setEvidenceNotes('');
+    setAnalyzing(true);
+    setAnalysisResult(null);
+    try {
+      const result = await analyzeDocument(inputText);
+      setAnalysisResult(result);
+      handleSuccess('Document analyzed successfully');
+    } catch (e) {
+      handleError(e, 'Failed to analyze document. Please check your API key and try again.', 'CaseManager');
+    } finally {
+      setAnalyzing(false);
     }
   };
 
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const validation = validateFile(file, {
+      maxSizeBytes: 50 * 1024 * 1024,
+      allowedTypes: ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'application/pdf']
+    });
+
+    if (!validation.valid) {
+      handleError(new Error(validation.error), validation.error || 'File validation failed', 'CaseManager');
+      e.target.value = '';
+      return;
+    }
+
+    setLastUploadName(file.name);
+    setEvidenceTitle(file.name);
+    setEvidenceNotes('');
+    setAnalyzing(true);
+    setAnalysisResult(null);
+
+    try {
+      handleSuccess('Processing document with Gemini AI...');
+      
+      let result;
+      if (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
+        result = await analyzePDFDocument(file, (progress, status) => {
+          console.log(`[DocumentProcessing] ${progress}% - ${status}`);
+        });
+      } else {
+        const filePart = await fileToGenerativePart(file);
+        result = await analyzeDocument("Analyze this uploaded document.", filePart);
+      }
+      
+      setAnalysisResult(result);
+      handleSuccess(`Document analyzed successfully (OCR confidence: ${result.confidence || '?'})`);
+    } catch (e) {
+      handleError(e, 'Failed to process file. Please try again.', 'CaseManager');
+    } finally {
+      setAnalyzing(false);
+      e.target.value = '';
+    }
+  };
+
+  const handleBatchFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
+
+    if (!activeCase) {
+      handleError(new Error('No active case'), 'Select a case before uploading files', 'CaseManager');
+      e.target.value = '';
+      return;
+    }
+
+    const validFiles: File[] = [];
+    for (const file of files) {
+      const validation = validateFile(file, {
+        maxSizeBytes: 50 * 1024 * 1024,
+        allowedTypes: ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'application/pdf']
+      });
+      if (validation.valid) {
+        validFiles.push(file);
+      } else {
+        handleError(new Error(validation.error), `${file.name}: ${validation.error}`, 'CaseManager');
+      }
+    }
+
+    if (validFiles.length === 0) {
+      e.target.value = '';
+      return;
+    }
+
+    setAnalyzing(true);
+    setBatchUploadProgress({ current: 0, total: validFiles.length, fileName: '' });
+
+    for (let i = 0; i < validFiles.length; i++) {
+      const file = validFiles[i];
+      const isPDF = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+      setBatchUploadProgress({ current: i + 1, total: validFiles.length, fileName: file.name });
+
+      try {
+        let result;
+        if (isPDF) {
+          result = await analyzePDFDocument(file);
+        } else {
+          const imagePart = await fileToGenerativePart(file);
+          result = await analyzeDocument("Analyze this image document.", imagePart);
+        }
+
+        const evidence: EvidenceItem = {
+          id: crypto.randomUUID(),
+          caseId: activeCase.id,
+          title: file.name,
+          type: DocumentType.EVIDENCE,
+          source: 'file',
+          summary: result.summary || result.text?.slice(0, 500) || 'No summary available',
+          keyEntities: result.entities || [],
+          risks: result.risks || [],
+          addedAt: new Date().toISOString(),
+          fileName: file.name,
+          notes: isPDF ? `PDF - ${result.pageCount || '?'} pages. Key dates: ${(result.keyDates || []).join(', ')}` : undefined,
+        };
+
+        await addEvidence(activeCase.id, evidence);
+        handleSuccess(`Analyzed and saved: ${file.name}`);
+        
+        // Add delay between files to avoid rate limiting
+        if (i < validFiles.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, 2000));
+        }
+      } catch (err) {
+        handleError(err, `Failed to process ${file.name}`, 'CaseManager');
+      }
+    }
+
+    setBatchUploadProgress(null);
+    setAnalyzing(false);
+    e.target.value = '';
+  };
+
+  const handleCreateCase = async (e: React.FormEvent) => {
+    e.preventDefault();
+
+    if (user?.plan === 'free' && cases.length >= 1) {
+      toast.error('Free plan is limited to 1 case. Please upgrade to Pro for unlimited cases.');
+      setShowNewCaseModal(false);
+      return;
+    }
+
+    // Input validation
+    if (!newCaseData.title?.trim()) {
+      handleError(new Error('Missing title'), 'Please enter a case title', 'CaseManager');
+      return;
+    }
+
+    if (!newCaseData.client?.trim()) {
+      handleError(new Error('Missing client'), 'Please enter a client name', 'CaseManager');
+      return;
+    }
+
+    const newCase: Case = {
+      id: crypto.randomUUID(),
+      title: newCaseData.title.trim(),
+      client: newCaseData.client.trim(),
+      status: CaseStatus.PRE_TRIAL,
+      opposingCounsel: newCaseData.opposingCounsel?.trim() || 'Unknown',
+      judge: newCaseData.judge?.trim() || 'Unknown',
+      nextCourtDate: 'TBD',
+      summary: newCaseData.summary?.trim() || 'No summary provided.',
+      winProbability: 50,
+      evidence: [],
+      tasks: [],
+    };
+    await addCase(newCase);
+    if (user?.plan === 'free') {
+      void updateUsage({ cases_created: (user.usage?.cases_created || 0) + 1 });
+    }
+    handleSuccess(`Case "${newCase.title}" created successfully`);
+    setShowNewCaseModal(false);
+    setNewCaseData({ title: '', client: '', opposingCounsel: '', judge: '', summary: '' });
+  };
+
+  const handleLoadTemplate = async (template: Case) => {
+    if (user?.plan === 'free' && cases.length >= 1) {
+      toast.error('Free plan is limited to 1 case. Please upgrade to Pro for unlimited cases.');
+      setShowLibraryModal(false);
+      return;
+    }
+
+    // Create a deep copy with a new ID to avoid conflicts if added multiple times
+    const newCase = { ...template, id: Date.now().toString() };
+    await addCase(newCase);
+    if (user?.plan === 'free') {
+      void updateUsage({ cases_created: (user.usage?.cases_created || 0) + 1 });
+    }
+    handleSuccess(`Template "${newCase.title}" loaded successfully`);
+    setShowLibraryModal(false);
+  };
+
+  const handleSaveEvidence = async () => {
+    if (!activeCase) {
+      handleError(new Error('No active case'), 'Select a case before attaching evidence', 'CaseManager');
+      return;
+    }
+    if (!analysisResult) {
+      handleError(new Error('No analysis to save'), 'Run an analysis first', 'CaseManager');
+      return;
+    }
+
+    const evidence: EvidenceItem = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      caseId: activeCase.id,
+      title: evidenceTitle.trim() || lastUploadName || 'Text analysis',
+      type: DocumentType.EVIDENCE,
+      source: lastUploadName ? 'file' : 'text',
+      summary: analysisResult.summary || 'No summary provided.',
+      keyEntities: analysisResult.entities || [],
+      risks: analysisResult.risks || [],
+      addedAt: new Date().toISOString(),
+      fileName: lastUploadName || undefined,
+      notes: evidenceNotes.trim() || undefined,
+    };
+
+    await addEvidence(activeCase.id, evidence);
+    handleSuccess('Evidence saved to case');
+    setEvidenceNotes('');
+  };
+
+  const handleAddTask = async () => {
+    if (!activeCase) {
+      handleError(new Error('No active case'), 'Select a case before adding tasks', 'CaseManager');
+      return;
+    }
+    if (!taskTitle.trim()) {
+      handleError(new Error('Missing task title'), 'Enter a task description', 'CaseManager');
+      return;
+    }
+
+    const newTask: CaseTask = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      caseId: activeCase.id,
+      title: taskTitle.trim(),
+      status: 'open',
+      priority: taskPriority,
+      dueDate: taskDue || undefined,
+    };
+
+    const nextTasks = [...(activeCase.tasks || []), newTask];
+    await updateCase(activeCase.id, { tasks: nextTasks });
+    handleSuccess('Task added');
+    setTaskTitle('');
+    setTaskDue('');
+  };
+
+  const handleTaskStatusChange = async (taskId: string, status: TaskStatus) => {
+    if (!activeCase) return;
+    const nextTasks = (activeCase.tasks || []).map(t => t.id === taskId ? { ...t, status } : t);
+    await updateCase(activeCase.id, { tasks: nextTasks });
+  };
+
   return (
-    <div className="space-y-4">
-      <div className="flex justify-between items-center">
-        <h2 className="text-2xl font-bold">My Cases</h2>
-        <Dialog open={isCreating} onOpenChange={setIsCreating}>
-          <DialogTrigger asChild>
-            <Button>
-              <Plus className="w-4 h-4 mr-2" />
-              New Case
-            </Button>
-          </DialogTrigger>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>Create New Case</DialogTitle>
-            </DialogHeader>
-            <div className="space-y-4">
-              <div>
-                <label className="text-sm font-medium">Title</label>
-                <Input
-                  value={newCase.title}
-                  onChange={(e) => setNewCase({ ...newCase, title: e.target.value })}
-                  placeholder="Enter case title"
-                />
+    <div className="h-full flex flex-col lg:flex-row gap-8">
+      {/* Case List Sidebar */}
+      <div className="w-full lg:w-1/3 flex flex-col gap-6">
+        <div className="flex items-center justify-between">
+           <h2 className="text-2xl font-bold font-serif text-white">Case Files</h2>
+           <div className="flex gap-2">
+              <button 
+                onClick={() => setShowAiGenModal(true)}
+                className="p-2 bg-purple-600 hover:bg-purple-500 text-white rounded-lg transition-colors flex items-center gap-1"
+                title="AI Realistic Case Generator"
+              >
+               <BrainCircuit size={20} />
+               <span className="hidden sm:inline text-xs font-bold">AI Gen</span>
+             </button>
+              <button 
+                onClick={() => setShowLibraryModal(true)}
+                className="p-2 bg-slate-700 hover:bg-slate-600 text-gold-500 rounded-lg transition-colors"
+                title="Practice Library (Mock Cases)"
+              >
+               <Library size={20} />
+             </button>
+             <button 
+               onClick={() => setShowNewCaseModal(true)}
+               className="p-2 bg-gold-600 hover:bg-gold-500 text-slate-900 rounded-lg transition-colors"
+               title="New Case"
+             >
+               <Plus size={20} />
+             </button>
+           </div>
+        </div>
+
+        <div className="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden min-h-[200px] flex-1 flex flex-col">
+          {cases.length === 0 ? (
+            <div className="p-8 text-center text-slate-500 flex-1 flex flex-col items-center justify-center">
+              <BookOpen size={32} className="mb-3 opacity-50" />
+              <p className="mb-4">No active cases found.</p>
+              <div className="flex flex-col gap-3 w-full">
+                <button 
+                  onClick={() => setShowNewCaseModal(true)}
+                  className="text-gold-500 hover:underline text-sm font-medium"
+                >
+                  + Create Real Case
+                </button>
+                <span className="text-xs opacity-50">- OR -</span>
+                <button 
+                  onClick={() => setShowLibraryModal(true)}
+                  className="bg-slate-700 hover:bg-slate-600 text-white py-2 px-4 rounded text-sm transition-colors"
+                >
+                  Browse Mock Trial Library
+                </button>
               </div>
-              <div>
-                <label className="text-sm font-medium">Type</label>
-                <Select value={newCase.case_type} onValueChange={(value) => setNewCase({ ...newCase, case_type: value })}>
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="profitability">Profitability</SelectItem>
-                    <SelectItem value="market-entry">Market Entry</SelectItem>
-                    <SelectItem value="pricing">Pricing</SelectItem>
-                    <SelectItem value="merger">Merger & Acquisition</SelectItem>
-                    <SelectItem value="operations">Operations</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div>
-                <label className="text-sm font-medium">Industry</label>
-                <Input
-                  value={newCase.industry}
-                  onChange={(e) => setNewCase({ ...newCase, industry: e.target.value })}
-                  placeholder="e.g., Technology, Healthcare"
-                />
-              </div>
-              <div>
-                <label className="text-sm font-medium">Difficulty</label>
-                <Select value={newCase.difficulty} onValueChange={(value) => setNewCase({ ...newCase, difficulty: value })}>
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="easy">Easy</SelectItem>
-                    <SelectItem value="medium">Medium</SelectItem>
-                    <SelectItem value="hard">Hard</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div>
-                <label className="text-sm font-medium">Description</label>
-                <Textarea
-                  value={newCase.description}
-                  onChange={(e) => setNewCase({ ...newCase, description: e.target.value })}
-                  placeholder="Brief description of the case"
-                  rows={3}
-                />
-              </div>
-              <Button onClick={createCase} className="w-full">Create Case</Button>
             </div>
-          </DialogContent>
-        </Dialog>
+          ) : (
+            <div className="overflow-y-auto max-h-[600px]">
+              {cases.map(c => (
+                <div 
+                  key={c.id}
+                  onClick={() => setActiveCase(c)}
+                  className={`p-4 border-b border-slate-700 cursor-pointer transition-colors ${activeCase?.id === c.id ? 'bg-slate-700/50 border-l-4 border-l-gold-500' : 'hover:bg-slate-700/30'}`}
+                >
+                  <h3 className="font-semibold text-white">{c.title}</h3>
+                  <p className="text-xs text-slate-400 mt-1">{`${c.status} -> ${c.client}`}</p>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {activeCase && (
+          <div className="bg-slate-800 p-6 rounded-xl border border-slate-700">
+            <h3 className="text-lg font-semibold text-white mb-2">Case Details</h3>
+            <div className="space-y-3 text-sm">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <span className="text-slate-400 block text-xs">Docket Number</span>
+                  <span className="text-slate-200 font-mono tracking-tight">{activeCase.docketNumber || 'N/A'}</span>
+                </div>
+                <div>
+                  <span className="text-slate-400 block text-xs">Jurisdiction</span>
+                  <span className="text-slate-200 capitalize">{activeCase.jurisdiction || 'N/A'}</span>
+                </div>
+              </div>
+              <div className="pt-2 border-t border-slate-700">
+                <span className="text-slate-400 block text-xs">Court Location</span>
+                <span className="text-slate-200">{activeCase.courtLocation || 'N/A'}</span>
+              </div>
+              <div className="pt-2 border-t border-slate-700">
+                <span className="text-slate-400 block text-xs">Judge</span>
+                <span className="text-slate-200">{activeCase.judge}</span>
+              </div>
+              <div className="pt-2 border-t border-slate-700">
+                <span className="text-slate-400 block text-xs">Opposing Counsel</span>
+                <span className="text-slate-200">{activeCase.opposingCounsel}</span>
+              </div>
+              <div className="pt-2 border-t border-slate-700">
+                <span className="text-slate-400 block text-xs">Opposing Party</span>
+                <span className="text-slate-200 font-semibold">{activeCase.opposingParty || 'Unknown'}</span>
+              </div>
+              <div className="pt-2 border-t border-slate-700">
+                <span className="text-slate-400 block text-xs">Summary</span>
+                <span className="text-slate-300 leading-relaxed text-xs line-clamp-6">{activeCase.summary}</span>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {cases.map((caseItem) => (
-          <Card
-            key={caseItem.id}
-            className="p-4 cursor-pointer hover:shadow-lg transition-shadow"
-            onClick={() => onSelectCase(caseItem.id, caseItem)}
-          >
-            <div className="flex items-start gap-3">
-              <FolderOpen className="w-8 h-8 text-primary mt-1" />
-              <div className="flex-1">
-                <h3 className="font-semibold text-lg">{caseItem.title}</h3>
-                <p className="text-sm text-muted-foreground">{caseItem.case_type}</p>
-                {caseItem.industry && (
-                  <p className="text-xs text-muted-foreground mt-1">{caseItem.industry}</p>
-                )}
-                {caseItem.description && (
-                  <p className="text-sm mt-2 line-clamp-2">{caseItem.description}</p>
-                )}
-                <div className="flex gap-2 mt-3">
-                  <span className="text-xs px-2 py-1 rounded-full bg-primary/10 text-primary">
-                    {caseItem.difficulty}
-                  </span>
-                  <span className="text-xs px-2 py-1 rounded-full bg-secondary/10 text-secondary-foreground">
-                    {caseItem.status}
-                  </span>
+      {/* Document Analysis Area */}
+      <div className="flex-1 flex flex-col gap-6">
+        <h2 className="text-2xl font-bold font-serif text-white">AI Document Intelligence</h2>
+        
+        <div className="bg-slate-800 rounded-xl border border-slate-700 p-6 flex-1 flex flex-col">
+          <div className="mb-6">
+            <label className="block text-sm font-medium text-slate-300 mb-2">Quick Analysis (Paste Text or Upload)</label>
+            <div className="flex gap-2 mb-2">
+               <textarea 
+                  className="w-full bg-slate-900 border border-slate-600 rounded-lg p-3 text-slate-200 text-sm focus:border-gold-500 focus:ring-1 focus:ring-gold-500 outline-none transition-all h-32"
+                  placeholder="Paste legal text here (depositions, motions, police reports)..."
+                  value={inputText}
+                  onChange={(e) => setInputText(e.target.value)}
+                />
+            </div>
+            
+            <div className="flex items-center justify-between">
+               <div className="flex gap-2">
+                  <div className="relative">
+                     <input 
+                        type="file" 
+                        id="doc-upload" 
+                        className="hidden" 
+                        accept="image/*,application/pdf"
+                        onChange={handleFileUpload}
+                     />
+                     <label htmlFor="doc-upload" className="flex items-center gap-2 cursor-pointer text-sm text-slate-400 hover:text-white transition-colors px-3 py-2 rounded-lg hover:bg-slate-700">
+                        <Upload size={16} />
+                        Upload Single
+                     </label>
+                  </div>
+                  <div className="relative">
+                     <input 
+                        type="file" 
+                        id="batch-doc-upload" 
+                        className="hidden" 
+                        accept="image/*,application/pdf"
+                        multiple
+                        onChange={handleBatchFileUpload}
+                     />
+                     <label htmlFor="batch-doc-upload" className="flex items-center gap-2 cursor-pointer text-sm text-slate-400 hover:text-white transition-colors px-3 py-2 rounded-lg hover:bg-slate-700 border border-slate-600">
+                        <Upload size={16} />
+                        Batch Upload
+                     </label>
+                  </div>
+               </div>
+              <button 
+                onClick={handleAnalyze}
+                disabled={analyzing}
+                className="bg-gold-600 hover:bg-gold-500 text-slate-900 px-6 py-2 rounded-lg font-semibold text-sm transition-colors disabled:opacity-50 flex items-center gap-2"
+              >
+                {analyzing ? 'Processing...' : <><Search size={16} /> Analyze</>}
+              </button>
+            </div>
+          </div>
+
+          {/* Results Area */}
+           <div className="flex-1 bg-slate-900/50 rounded-lg border border-slate-700 p-4 overflow-y-auto">
+            {batchUploadProgress && (
+              <div className="h-full flex flex-col items-center justify-center text-gold-500">
+                <BrainCircuit size={48} className="mb-4 animate-pulse" />
+                <p className="font-semibold">Batch Upload Progress</p>
+                <p className="text-sm text-slate-300 mt-2">
+                  Processing {batchUploadProgress.current} of {batchUploadProgress.total}: {batchUploadProgress.fileName}
+                </p>
+                <div className="w-full max-w-xs mt-4 bg-slate-700 rounded-full h-2">
+                  <div 
+                    className="bg-gold-500 h-2 rounded-full transition-all duration-300"
+                    style={{ width: `${(batchUploadProgress.current / batchUploadProgress.total) * 100}%` }}
+                  />
+                </div>
+              </div>
+            )}
+            {!analysisResult && !analyzing && !batchUploadProgress && (
+              <div className="h-full flex flex-col items-center justify-center text-slate-500 opacity-50">
+                <FileText size={48} className="mb-4" />
+                <p>No analysis results yet.</p>
+              </div>
+            )}
+
+            {analyzing && (
+               <div className="h-full flex flex-col items-center justify-center text-gold-500 animate-pulse">
+                 <BrainCircuit size={48} className="mb-4" />
+                 <p>AI is reading and cross-referencing...</p>
+               </div>
+            )}
+
+            {analysisResult && (
+              <div className="space-y-6 animate-fadeIn">
+                <div>
+                  <h4 className="flex items-center gap-2 text-gold-500 font-semibold mb-2">
+                    <Eye size={18} />
+                    Summary
+                  </h4>
+                  <p className="text-slate-300 text-sm leading-relaxed bg-slate-800 p-3 rounded border border-slate-700">
+                    {analysisResult.summary}
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <h4 className="flex items-center gap-2 text-blue-400 font-semibold mb-2">
+                      <CheckCircle size={18} />
+                      Key Entities
+                    </h4>
+                    <ul className="bg-slate-800 p-3 rounded border border-slate-700 space-y-1">
+                      {analysisResult.entities?.map((ent: string, i: number) => (
+                        <li key={i} className="text-xs text-slate-300 px-2 py-1 bg-slate-700/50 rounded inline-block mr-2 mb-1">
+                          {ent}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+
+                  <div>
+                    <h4 className="flex items-center gap-2 text-red-400 font-semibold mb-2">
+                      <AlertTriangle size={18} />
+                      Risks & Contradictions
+                    </h4>
+                    <ul className="bg-slate-800 p-3 rounded border border-slate-700 space-y-2">
+                      {analysisResult.risks?.map((risk: string, i: number) => (
+                        <li key={i} className="text-sm text-slate-300 flex items-start gap-2">
+                          <span className="text-red-500 mt-1">-</span>
+                          {risk}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+          {analysisResult && (
+            <div className="mt-4 border-t border-slate-700 pt-4">
+              <div className="flex items-center justify-between mb-3">
+                <div>
+                  <p className="text-sm text-slate-200 font-semibold flex items-center gap-2">
+                    <Save size={16} />
+                    Attach analysis to case
+                  </p>
+                  <p className="text-xs text-slate-400">Active case: {activeCase ? activeCase.title : 'Select a case from the left panel'}</p>
+                </div>
+                <div className="text-xs text-slate-500 flex items-center gap-2">
+                  <Clock size={14} /> {new Date().toLocaleString()}
+                </div>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div className="md:col-span-2">
+                  <label className="block text-xs text-slate-400 mb-1">Evidence title</label>
+                  <input 
+                    type="text"
+                    value={evidenceTitle}
+                    onChange={(e) => setEvidenceTitle(e.target.value)}
+                    className="w-full bg-slate-900 border border-slate-700 rounded p-2 text-white text-sm focus:border-gold-500 outline-none"
+                    placeholder="e.g., Incident report contradictions"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-400 mb-1">Source</label>
+                  <div className="bg-slate-900 border border-slate-700 rounded p-2 text-xs text-slate-300 flex items-center gap-2">
+                    <Tag size={14} className="text-gold-500" />
+                    {lastUploadName ? `File: ${lastUploadName}` : 'Text input'}
+                  </div>
+                </div>
+              </div>
+              <div className="mt-3 flex flex-col md:flex-row gap-3">
+                <div className="flex-1">
+                  <label className="block text-xs text-slate-400 mb-1">Context / notes</label>
+                  <textarea 
+                    rows={2}
+                    value={evidenceNotes}
+                    onChange={(e) => setEvidenceNotes(e.target.value)}
+                    className="w-full bg-slate-900 border border-slate-700 rounded p-2 text-white text-sm focus:border-gold-500 outline-none"
+                    placeholder="Chain-of-custody notes, follow-ups, requests to investigators..."
+                  />
+                </div>
+                <div className="flex items-end">
+                  <button 
+                    onClick={() => { void handleSaveEvidence(); }}
+                    disabled={!activeCase}
+                    className="bg-gold-600 hover:bg-gold-500 text-slate-900 px-5 py-2 rounded-lg font-semibold text-sm transition-colors disabled:opacity-50 flex items-center gap-2"
+                  >
+                    <Save size={16} />
+                    Save to case
+                  </button>
                 </div>
               </div>
             </div>
-          </Card>
-        ))}
+          )}
+        </div>
+        <div className="bg-slate-800 rounded-xl border border-slate-700 p-6">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h3 className="text-lg font-semibold text-white">Evidence Board</h3>
+              <p className="text-xs text-slate-400">Capture AI findings, upload context, and keep them tied to the active matter.</p>
+            </div>
+            <div className="text-xs text-slate-500">{caseEvidence.length} item(s)</div>
+          </div>
+
+          {!activeCase && (
+            <div className="text-slate-400 text-sm bg-slate-900/40 border border-dashed border-slate-700 rounded-lg p-4 text-center">
+              Select or create a case to start attaching evidence.
+            </div>
+          )}
+
+          {activeCase && caseEvidence.length === 0 && (
+            <div className="text-slate-400 text-sm bg-slate-900/40 border border-dashed border-slate-700 rounded-lg p-4 text-center">
+              No saved evidence yet. Run an analysis and click "Save to case."
+            </div>
+          )}
+
+          {activeCase && caseEvidence.length > 0 && (
+            <div className="space-y-3">
+              {caseEvidence.map(ev => (
+                <div key={ev.id} className="bg-slate-900/50 border border-slate-700 rounded-lg p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-sm text-slate-300 font-semibold">{ev.title}</p>
+                      <p className="text-xs text-slate-500">Source: {ev.source === 'file' ? ev.fileName || 'File' : 'Text input'}</p>
+                    </div>
+                    <span className="text-xs text-slate-500">{new Date(ev.addedAt).toLocaleString()}</span>
+                  </div>
+                  <p className="text-sm text-slate-200 mt-2">{ev.summary}</p>
+                  {ev.keyEntities?.length > 0 && (
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {ev.keyEntities.map((ent, idx) => (
+                        <span key={idx} className="text-xs text-slate-200 bg-slate-800 border border-slate-700 rounded px-2 py-1">{ent}</span>
+                      ))}
+                    </div>
+                  )}
+                  {ev.risks?.length > 0 && (
+                    <div className="mt-2">
+                      <p className="text-xs text-red-300 font-semibold mb-1">Risks</p>
+                      <ul className="list-disc list-inside text-xs text-slate-300 space-y-1">
+                        {ev.risks.map((r, idx) => <li key={idx}>{r}</li>)}
+                      </ul>
+                    </div>
+                  )}
+                  {ev.notes && (
+                    <p className="text-xs text-slate-400 mt-2">Notes: {ev.notes}</p>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="bg-slate-800 rounded-xl border border-slate-700 p-6">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h3 className="text-lg font-semibold text-white">Docket & Tasks</h3>
+              <p className="text-xs text-slate-400">Track deadlines, follow-ups, and filings per case.</p>
+            </div>
+            <ListChecks className="text-gold-500" size={18} />
+          </div>
+
+          {!activeCase && (
+            <div className="text-slate-400 text-sm bg-slate-900/40 border border-dashed border-slate-700 rounded-lg p-4 text-center">
+              Select or create a case to manage tasks.
+            </div>
+          )}
+
+          {activeCase && (
+            <>
+              <div className="grid md:grid-cols-3 gap-3 mb-3">
+                <div className="md:col-span-2">
+                  <label className="block text-xs text-slate-400 mb-1">Task title</label>
+                  <input
+                    type="text"
+                    value={taskTitle}
+                    onChange={(e) => setTaskTitle(e.target.value)}
+                    className="w-full bg-slate-900 border border-slate-700 rounded p-2 text-white text-sm focus:border-gold-500 outline-none"
+                    placeholder="File motion to compel, prep witness outline..."
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="block text-xs text-slate-400 mb-1">Priority</label>
+                    <select
+                      value={taskPriority}
+                      onChange={(e) => setTaskPriority(e.target.value as PriorityLevel)}
+                      className="w-full bg-slate-900 border border-slate-700 rounded p-2 text-sm text-white"
+                    >
+                      <option value="low">Low</option>
+                      <option value="medium">Medium</option>
+                      <option value="high">High</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs text-slate-400 mb-1">Due date</label>
+                    <input
+                      type="date"
+                      value={taskDue}
+                      onChange={(e) => setTaskDue(e.target.value)}
+                      className="w-full bg-slate-900 border border-slate-700 rounded p-2 text-sm text-white"
+                    />
+                  </div>
+                </div>
+              </div>
+              <div className="flex justify-end mb-4">
+                <button
+                  onClick={() => { void handleAddTask(); }}
+                  className="bg-gold-600 hover:bg-gold-500 text-slate-900 px-4 py-2 rounded-lg text-sm font-semibold transition-colors"
+                >
+                  Add Task
+                </button>
+              </div>
+
+              {caseTasks.length === 0 ? (
+                <div className="text-slate-400 text-sm bg-slate-900/40 border border-dashed border-slate-700 rounded-lg p-4 text-center">
+                  No tasks yet. Add your first deadline or follow-up.
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {caseTasks.map(task => (
+                    <div key={task.id} className="bg-slate-900/50 border border-slate-700 rounded-lg p-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <p className="text-sm text-slate-200 font-semibold">{task.title}</p>
+                          <div className="text-xs text-slate-500 flex gap-3 mt-1">
+                            <span>Priority: {task.priority}</span>
+                            {task.dueDate && <span>Due: {task.dueDate}</span>}
+                          </div>
+                        </div>
+                        <select
+                          value={task.status}
+                          onChange={(e) => { void handleTaskStatusChange(task.id, e.target.value as TaskStatus); }}
+                          className="text-xs bg-slate-800 border border-slate-700 rounded px-2 py-1 text-slate-200"
+                        >
+                          <option value="open">Open</option>
+                          <option value="blocked">Blocked</option>
+                          <option value="done">Done</option>
+                        </select>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+        </div>
       </div>
 
-      {cases.length === 0 && (
-        <div className="text-center py-12">
-          <FileText className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
-          <p className="text-muted-foreground">No cases yet. Create your first case to get started.</p>
+      {/* New Case Modal */}
+      {showNewCaseModal && (
+        <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+          <div className="bg-slate-900 border border-slate-700 rounded-xl p-6 w-full max-w-md shadow-2xl">
+             <div className="flex justify-between items-center mb-4">
+               <h3 className="text-xl font-bold text-white">Add New Case</h3>
+               <button onClick={() => setShowNewCaseModal(false)} className="text-slate-400 hover:text-white"><X size={24} /></button>
+             </div>
+             <form onSubmit={handleCreateCase} className="space-y-4">
+                <div>
+                  <label className="block text-sm text-slate-400 mb-1">Case Title</label>
+                  <input 
+                    required
+                    type="text" 
+                    className="w-full bg-slate-800 border border-slate-700 rounded p-2 text-white focus:border-gold-500 outline-none" 
+                    value={newCaseData.title}
+                    onChange={e => setNewCaseData({...newCaseData, title: e.target.value})}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm text-slate-400 mb-1">Client Name</label>
+                  <input 
+                    required
+                    type="text" 
+                    className="w-full bg-slate-800 border border-slate-700 rounded p-2 text-white focus:border-gold-500 outline-none"
+                    value={newCaseData.client}
+                    onChange={e => setNewCaseData({...newCaseData, client: e.target.value})}
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                   <div>
+                      <label className="block text-sm text-slate-400 mb-1">Opposing Counsel</label>
+                      <input 
+                        type="text" 
+                        className="w-full bg-slate-800 border border-slate-700 rounded p-2 text-white focus:border-gold-500 outline-none"
+                        value={newCaseData.opposingCounsel}
+                        onChange={e => setNewCaseData({...newCaseData, opposingCounsel: e.target.value})}
+                      />
+                   </div>
+                   <div>
+                      <label className="block text-sm text-slate-400 mb-1">Judge</label>
+                      <input 
+                        type="text" 
+                        className="w-full bg-slate-800 border border-slate-700 rounded p-2 text-white focus:border-gold-500 outline-none"
+                        value={newCaseData.judge}
+                        onChange={e => setNewCaseData({...newCaseData, judge: e.target.value})}
+                      />
+                   </div>
+                </div>
+                <div>
+                  <label className="block text-sm text-slate-400 mb-1">Case Summary / Context</label>
+                  <textarea 
+                    required
+                    rows={3}
+                    className="w-full bg-slate-800 border border-slate-700 rounded p-2 text-white text-sm focus:border-gold-500 outline-none"
+                    placeholder="Briefly describe the charges or civil complaint..."
+                    value={newCaseData.summary}
+                    onChange={e => setNewCaseData({...newCaseData, summary: e.target.value})}
+                  />
+                </div>
+                <button 
+                  type="submit"
+                  className="w-full bg-gold-600 hover:bg-gold-500 text-slate-900 font-bold py-3 rounded-lg mt-2"
+                >
+                  Create Case
+                </button>
+             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Library (Mock Cases) Modal */}
+      {showLibraryModal && (
+        <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+           <div className="bg-slate-900 border border-slate-700 rounded-xl p-6 w-full max-w-4xl max-h-[90vh] flex flex-col shadow-2xl">
+              <div className="flex justify-between items-center mb-6 flex-shrink-0">
+                <div>
+                  <h3 className="text-2xl font-bold font-serif text-white flex items-center gap-3">
+                    <Library className="text-gold-500" /> Practice Library
+                  </h3>
+                  <p className="text-slate-400 text-sm mt-1">Select a scenario to practice with if you don't have real case data.</p>
+                </div>
+                <button onClick={() => setShowLibraryModal(false)} className="text-slate-400 hover:text-white"><X size={24} /></button>
+              </div>
+              
+              <div className="overflow-y-auto custom-scrollbar pr-2 space-y-8 flex-1">
+                 {MOCK_CASE_TEMPLATES.map((section, idx) => (
+                    <div key={idx}>
+                       <h4 className="text-lg font-bold text-white mb-3 sticky top-0 bg-slate-900 py-2 border-b border-slate-800 z-10">
+                         {section.category}
+                       </h4>
+                       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                          {section.cases.map((templateCase) => (
+                             <button 
+                              key={templateCase.id}
+                              onClick={() => { void handleLoadTemplate(templateCase); }}
+                              className="bg-slate-800 hover:bg-slate-700 border border-slate-700 hover:border-gold-500/50 rounded-lg p-4 text-left transition-all group"
+                            >
+                                <div className="flex justify-between items-start mb-2">
+                                   <span className="text-xs font-bold text-gold-500 uppercase tracking-wider border border-gold-500/30 px-2 py-0.5 rounded">
+                                      {templateCase.status}
+                                   </span>
+                                </div>
+                                <h5 className="font-bold text-white text-lg mb-1 group-hover:text-gold-400 transition-colors">{templateCase.title}</h5>
+                                <p className="text-xs text-slate-400 mb-3 line-clamp-1">vs. {templateCase.opposingCounsel}</p>
+                                <p className="text-sm text-slate-300 line-clamp-3 leading-relaxed">
+                                   {templateCase.summary}
+                                </p>
+                             </button>
+                          ))}
+                       </div>
+                    </div>
+                 ))}
+              </div>
+           </div>
+        </div>
+      )}
+      {/* AI Generate Case Modal */}
+      {showAiGenModal && (
+        <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+          <div className="bg-slate-900 border border-slate-700 rounded-xl p-6 w-full max-w-md shadow-2xl">
+             <div className="flex justify-between items-center mb-4">
+               <div className="flex items-center gap-2">
+                 <BrainCircuit className="text-purple-400" size={24} />
+                 <h3 className="text-xl font-bold text-white">AI Realistic Case Generator</h3>
+               </div>
+               <button onClick={() => setShowAiGenModal(false)} className="text-slate-400 hover:text-white"><X size={24} /></button>
+             </div>
+             <p className="text-xs text-slate-400 mb-4 italic leading-relaxed">
+               Briefly describe your case (e.g., "A commercial slip and fall case in New York with spinal injuries and disputed signage") and CaseBuddy will generate a full, realistic case file with parties, court info, and legal theory.
+             </p>
+             <div className="space-y-4">
+                <div>
+                  <textarea 
+                    autoFocus
+                    required
+                    rows={4}
+                    className="w-full bg-slate-800 border border-slate-700 rounded p-3 text-white text-sm focus:border-purple-500 outline-none transition-all placeholder-slate-600"
+                    placeholder="Describe your case briefly..."
+                    value={aiGenPrompt}
+                    onChange={e => setAiGenPrompt(e.target.value)}
+                    disabled={generating}
+                  />
+                </div>
+                <button 
+                  onClick={handleAiGenerate}
+                  disabled={generating || !aiGenPrompt.trim()}
+                  className="w-full bg-purple-600 hover:bg-purple-500 text-white font-bold py-3 rounded-lg flex items-center justify-center gap-2 disabled:opacity-50 transition-all"
+                >
+                  {generating ? (
+                    <><Loader2 className="animate-spin" size={18} /> Generating case details...</>
+                  ) : (
+                    <><BrainCircuit size={18} /> Generate Realistic Case</>
+                  )}
+                </button>
+             </div>
+          </div>
         </div>
       )}
     </div>
   );
 };
+
+export default CaseManager;
