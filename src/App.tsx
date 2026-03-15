@@ -37,6 +37,8 @@ const EvidenceTimeline = lazy(() => import('./components/EvidenceTimeline'));
 const MockJury = lazy(() => import('./components/MockJury'));
 const PublicRecordsManager = lazy(() => import('./components/PublicRecordsManager'));
 const OfficerDatabase = lazy(() => import('./components/OfficerDatabase'));
+import Index from './pages/Index';
+import NotFound from './pages/NotFound';
 
 import { MOCK_CASES } from './constants';
 import { Case, EvidenceItem } from './types';
@@ -380,7 +382,8 @@ const AppInner = () => {
       <ErrorBoundary>
         <Suspense fallback={<div className="min-h-screen bg-slate-900 flex items-center justify-center text-slate-400">Loading...</div>}>
           <Routes>
-            <Route path="/" element={<LandingPage />} />
+            <Route path="/" element={<Index />} />
+            <Route path="/landing" element={<LandingPage />} />
             <Route path="/privacy-policy" element={<PrivacyPolicy />} />
             <Route path="/tos" element={<TermsOfService />} />
 
@@ -409,7 +412,7 @@ const AppInner = () => {
             <Route path="/app/foia" element={<AuthenticatedLayout><PublicRecordsManager /></AuthenticatedLayout>} />
             <Route path="/app/officers" element={<AuthenticatedLayout><OfficerDatabase /></AuthenticatedLayout>} />
 
-            <Route path="*" element={<Navigate to="/" replace />} />
+            <Route path="*" element={<NotFound />} />
           </Routes>
         </Suspense>
       </ErrorBoundary>
