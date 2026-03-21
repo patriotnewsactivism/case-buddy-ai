@@ -1279,26 +1279,52 @@ const CaseBuddyApp = () => {
   const [caseContext, setCaseContext] = useState<any>(undefined);
 
   useEffect(() => {
+    let mounted = true;
+    
+    // Set a timeout to skip auth if Supabase is not responding
+    const timeoutId = setTimeout(() => {
+      if (mounted && view === 'auth') {
+        console.warn('Supabase auth check timed out, proceeding without authentication');
+        setView('landing');
+      }
+    }, 3000);
+
     // Check if user is already authenticated
     supabase.auth.getSession().then(({ data: { session } }) => {
-      if (session) {
-        setIsAuthenticated(true);
+      clearTimeout(timeoutId);
+      if (mounted) {
+        if (session) {
+          setIsAuthenticated(true);
+          setView('landing');
+        }
+      }
+    }).catch((error) => {
+      clearTimeout(timeoutId);
+      if (mounted) {
+        console.warn('Supabase auth check failed, proceeding without authentication:', error);
+        // If Supabase is not available, skip auth and go to landing page
         setView('landing');
       }
     });
 
     // Listen for auth changes
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
-      setIsAuthenticated(!!session);
-      if (session && view === 'auth') {
-        setView('landing');
-      } else if (!session) {
-        setView('auth');
+      if (mounted) {
+        setIsAuthenticated(!!session);
+        if (session && view === 'auth') {
+          setView('landing');
+        } else if (!session) {
+          setView('auth');
+        }
       }
     });
 
-    return () => subscription.unsubscribe();
-  }, []);
+    return () => {
+      mounted = false;
+      clearTimeout(timeoutId);
+      subscription.unsubscribe();
+    };
+  }, [view]);
 
   const handleSignOut = async () => {
     await supabase.auth.signOut();
