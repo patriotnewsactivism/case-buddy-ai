@@ -85,10 +85,12 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
           console.warn('[Auth] Supabase not configured, skipping auth initialization');
           setSupabaseUser(null);
           setUser(null);
+          setLoading(false);
           return;
         }
         // Pre-warm health check so we can detect paused/unreachable projects early
         checkSupabaseHealth().catch(() => {});
+        
         const { data: { session }, error: sessionError } = await Promise.race([
           supabase.auth.getSession(),
           new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Session check timed out')), 8000)),

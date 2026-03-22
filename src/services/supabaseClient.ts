@@ -19,7 +19,9 @@ const isValidUrl = (url: string): boolean => {
 
 const isValidConfig = supabaseUrl && supabaseAnonKey && isValidUrl(supabaseUrl);
 
-export const supabase: SupabaseClient = createClient(
+export const isSupabaseConfigured = (): boolean => isValidConfig;
+
+export const supabase = createClient(
   supabaseUrl,
   supabaseAnonKey,
   {
@@ -33,10 +35,8 @@ export const supabase: SupabaseClient = createClient(
 );
 
 export const getSupabaseClient = (): SupabaseClient | null => {
-  return isValidConfig ? supabase : null;
+  return isSupabaseConfigured() ? supabase : null;
 };
-
-export const isSupabaseConfigured = (): boolean => isValidConfig;
 
 export const getSupabaseUrl = (): string => supabaseUrl;
 export const getSupabaseAnonKey = (): string => supabaseAnonKey;
